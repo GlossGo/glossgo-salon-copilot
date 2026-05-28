@@ -1,0 +1,91 @@
+%% glossgo Salon Co-Pilot — system architecture
+%% Render with: mmdc -i architecture.mmd -o architecture.png -b transparent -w 2200
+flowchart TB
+  subgraph CUSTOMER ["Customer surface (out of scope)"]
+    cust[Customer app on glossgo.com]
+    gmaps[Google review on Maps]
+  end
+
+  subgraph BE ["glossgo-be production (existing)"]
+    api[Hono API on Cloudflare Workers]
+    db[(Supabase prod Postgres)]
+    wapi[WhatsApp Business API]
+  end
+
+  subgraph WORKER ["Event bridge"]
+    ev[Worker route /copilot/events<br/>signs JWT, POSTs to Pub/Sub]
+  end
+
+  subgraph PS ["Google Pub/Sub"]
+    topic[(copilot-events topic)]
+  end
+
+  subgraph RUN ["Cloud Run — europe-west4"]
+    orch[copilot-orchestrator<br/>Python ADK 2.x · Gemini 2.5 Pro<br/>POST /event auth-gated]
+    nsr[no-show-recovery<br/>Gemini 2.5 Flash]
+    rr[review-responder<br/>Gemini 2.5 Flash]
+    co[calendar-optimizer<br/>Gemini 2.5 Flash]
+    mcpD[mcp-data<br/>TypeScript · Streamable HTTP]
+    mcpC[mcp-comms<br/>TypeScript · Streamable HTTP]
+    mcpK[mcp-calendar<br/>TypeScript · Streamable HTTP]
+  end
+
+  subgraph DATA ["Supabase — copilot schema (isolated)"]
+    bk[(bookings)]
+    cu[(customers)]
+    wl[(waitlist_entries)]
+    sv[(services)]
+    rv[(reviews)]
+    aa[(agent_actions)]
+    oaq[(owner_approval_queue)]
+  end
+
+  subgraph SEC ["Secret Manager + IAM"]
+    sec[copilot-* secrets<br/>WEBHOOK_BEARER · MCP_BEARER · GEMINI_API_KEY · SUPABASE_SRK]
+    iam[Cloud Run runtime SA<br/>copilot-orchestrator@…]
+  end
+
+  cust -->|booking, cancel| api
+  gmaps -.->|fetched by glossgo-be cron| api
+  api -->|booking.cancelled, review.created| ev
+  ev -->|push OIDC JWT| topic
+  topic -->|push subscription| orch
+
+  orch --> nsr
+  orch --> rr
+  orch --> co
+  nsr ---|MCP tool call| mcpD
+  nsr ---|MCP tool call| mcpC
+  nsr ---|MCP tool call| mcpK
+  rr  ---|MCP tool call| mcpD
+  rr  ---|MCP tool call| mcpC
+  co  ---|MCP tool call| mcpD
+  co  ---|MCP tool call| mcpC
+
+  mcpD --> bk
+  mcpD --> cu
+  mcpD --> wl
+  mcpD --> sv
+  mcpD --> rv
+  mcpC --> aa
+  mcpC --> oaq
+  mcpC -.->|SHADOW_MODE=false only| wapi
+  mcpK --> bk
+
+  sec -.-> orch
+  sec -.-> mcpD
+  sec -.-> mcpC
+  sec -.-> mcpK
+  iam -.-> orch
+  iam -.->|--no-allow-unauthenticated invoker| mcpD
+  iam -.->|--no-allow-unauthenticated invoker| mcpC
+  iam -.->|--no-allow-unauthenticated invoker| mcpK
+
+  classDef agent fill:#fbe7f5,stroke:#a23db4,color:#3b1340
+  classDef mcp   fill:#e7f1fb,stroke:#1f6fb8,color:#0d2a4d
+  classDef data  fill:#fff5d6,stroke:#a4862e,color:#36280a
+  classDef ext   fill:#eee,stroke:#777,color:#222
+  class orch,nsr,rr,co agent
+  class mcpD,mcpC,mcpK mcp
+  class bk,cu,wl,sv,rv,aa,oaq data
+  class api,db,wapi,gmaps,cust ext
