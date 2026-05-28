@@ -4,6 +4,17 @@ import { z } from "zod";
 
 const SHADOW = (process.env.SHADOW_MODE ?? "true").toLowerCase() === "true";
 
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const uuid = () => z.string().regex(UUID_V4, "must be a UUID");
+const iso = () =>
+  z
+    .string()
+    .regex(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/,
+      "must be ISO 8601 timestamp",
+    );
+
 const supabase = (() => {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -36,13 +47,13 @@ export function buildServer(): McpServer {
       description:
         "Create a new booking. Idempotent via idempotency_key. In SHADOW_MODE=true the booking is recorded with status=shadow.",
       inputSchema: {
-        business_id: z.string(),
-        customer_id: z.string(),
-        service_id: z.string(),
-        staff_id: z.string().optional(),
-        starts_at: z.string().describe("ISO timestamp"),
-        ends_at: z.string().describe("ISO timestamp"),
-        idempotency_key: z.string(),
+        business_id: uuid(),
+        customer_id: uuid(),
+        service_id: uuid(),
+        staff_id: uuid().optional(),
+        starts_at: iso().describe("ISO timestamp"),
+        ends_at: iso().describe("ISO timestamp"),
+        idempotency_key: z.string().min(8).max(64),
         source: z.literal("agent").default("agent"),
       },
     },
@@ -72,11 +83,11 @@ export function buildServer(): McpServer {
       title: "Block slot",
       description: "Block a slot on a staff calendar (e.g. reserved-for-waitlist).",
       inputSchema: {
-        business_id: z.string(),
-        staff_id: z.string(),
-        starts_at: z.string(),
-        ends_at: z.string(),
-        reason: z.string(),
+        business_id: uuid(),
+        staff_id: uuid(),
+        starts_at: iso(),
+        ends_at: iso(),
+        reason: z.string().min(1).max(240),
       },
     },
     async (input) => {
@@ -95,11 +106,11 @@ export function buildServer(): McpServer {
       description:
         "Record the agent's chosen waitlist candidate for an open slot, before any messaging.",
       inputSchema: {
-        business_id: z.string(),
-        cancelled_booking_id: z.string(),
-        candidate_customer_id: z.string(),
+        business_id: uuid(),
+        cancelled_booking_id: uuid(),
+        candidate_customer_id: uuid(),
         score: z.number().min(0).max(1),
-        rationale: z.string(),
+        rationale: z.string().min(1).max(500),
       },
     },
     async (input) => {

@@ -26,5 +26,20 @@ export SUBAGENT_MODEL="${SUBAGENT_MODEL:-gemini-2.5-flash}"
 export SHADOW_MODE="${SHADOW_MODE:-true}"
 export PORT="${PORT:-8080}"
 
-echo "==> orchestrator on :$PORT  (model=$ORCHESTRATOR_MODEL, transport=$MCP_TRANSPORT, shadow=$SHADOW_MODE)"
+# /event is auth-gated; generate a stable per-shell secret unless caller set one.
+# Print it to the console so you can curl with the right header.
+if [[ -z "${COPILOT_WEBHOOK_BEARER:-}" ]]; then
+  export COPILOT_WEBHOOK_BEARER="$(openssl rand -hex 32)"
+fi
+
+cat <<INFO
+==> orchestrator on :$PORT  (model=$ORCHESTRATOR_MODEL, transport=$MCP_TRANSPORT, shadow=$SHADOW_MODE)
+    Webhook bearer: $COPILOT_WEBHOOK_BEARER
+    Smoke test:
+      curl -X POST http://localhost:$PORT/event \\
+        -H "Authorization: Bearer \$COPILOT_WEBHOOK_BEARER" \\
+        -H "Content-Type: application/json" \\
+        -d '{"type":"booking.cancelled","business_id":"11111111-0000-0000-0000-000000000001","booking_id":"55555555-0000-0000-0000-000000000001"}'
+INFO
+
 exec python -m uvicorn main:app --host 0.0.0.0 --port "$PORT"

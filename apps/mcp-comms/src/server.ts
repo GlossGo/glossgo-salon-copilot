@@ -4,6 +4,18 @@ import { z } from "zod";
 
 const SHADOW = (process.env.SHADOW_MODE ?? "true").toLowerCase() === "true";
 
+/** Approved WhatsApp Business templates this server is allowed to send. */
+const WHATSAPP_TEMPLATES = [
+  "waitlist_match",
+  "review_response_request",
+  "campaign_blast",
+  "booking_reminder",
+] as const;
+
+const E164 = /^\+[1-9]\d{6,14}$/;
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const supabase = (() => {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -31,12 +43,20 @@ export function buildServer(): McpServer {
       description:
         "Send a WhatsApp Business message. In SHADOW_MODE=true, the message is logged + recorded in copilot.agent_actions but not actually sent.",
       inputSchema: {
-        to: z.string().describe("E.164 phone, e.g. +905321234567"),
-        template: z.string().describe("Approved BSP template name, e.g. 'waitlist_match'"),
+        to: z
+          .string()
+          .regex(E164, "must be an E.164 phone (e.g. +905321234567)")
+          .describe("E.164 phone, e.g. +905321234567"),
+        template: z
+          .enum(WHATSAPP_TEMPLATES)
+          .describe("Server-side allowlisted BSP template name"),
         variables: z
           .record(z.string())
           .describe("Template variable substitutions"),
-        business_id: z.string(),
+        business_id: z
+          .string()
+          .regex(UUID_V4, "must be a UUID")
+          .describe("Caller tenant; must match the authenticated session"),
       },
     },
     async ({ to, template, variables, business_id }) => {
@@ -73,7 +93,7 @@ export function buildServer(): McpServer {
       description:
         "Drop a draft (review reply, campaign blast, etc.) into the salon owner's approval queue.",
       inputSchema: {
-        business_id: z.string(),
+        business_id: z.string().regex(UUID_V4, "must be a UUID"),
         channel: z.enum(["review", "campaign", "whatsapp", "other"]),
         payload: z.record(z.unknown()),
       },

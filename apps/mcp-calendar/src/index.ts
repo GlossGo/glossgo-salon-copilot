@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -9,6 +9,22 @@ import { buildServer } from "./server.js";
 const TRANSPORT = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
 const PORT = Number.parseInt(process.env.PORT ?? "8083", 10);
 const BEARER = process.env.MCP_BEARER_TOKEN ?? "";
+
+if ((TRANSPORT === "http" || TRANSPORT === "sse") && BEARER.length < 16) {
+  throw new Error(
+    "mcp-calendar: MCP_BEARER_TOKEN must be set (>=16 chars) when MCP_TRANSPORT is http/sse",
+  );
+}
+
+const EXPECTED_AUTH = `Bearer ${BEARER}`;
+const EXPECTED_BUF = Buffer.from(EXPECTED_AUTH);
+
+function authOk(headerValue: string): boolean {
+  if (!BEARER) return false;
+  const headerBuf = Buffer.from(headerValue);
+  if (headerBuf.length !== EXPECTED_BUF.length) return false;
+  return timingSafeEqual(headerBuf, EXPECTED_BUF);
+}
 
 async function runStdio() {
   const server = buildServer();
@@ -21,12 +37,9 @@ async function runHttp() {
   app.use(express.json({ limit: "1mb" }));
   app.get("/healthz", (_req, res) => res.json({ status: "ok", service: "mcp-calendar" }));
   app.post("/mcp", async (req: Request, res: Response) => {
-    if (BEARER) {
-      const auth = req.header("authorization") ?? "";
-      if (auth !== `Bearer ${BEARER}`) {
-        res.status(401).json({ error: "unauthorized" });
-        return;
-      }
+    if (!authOk(req.header("authorization") ?? "")) {
+      res.status(401).json({ error: "unauthorized" });
+      return;
     }
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({

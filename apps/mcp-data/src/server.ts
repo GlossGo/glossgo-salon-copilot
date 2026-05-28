@@ -6,6 +6,19 @@ import { supabase } from "./db.js";
 const PKG_NAME = "glossgo-copilot-mcp-data";
 const PKG_VERSION = "0.1.0";
 
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const uuid = () => z.string().regex(UUID_V4, "must be a UUID");
+const isoDate = () =>
+  z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+
+// Until per-call tenant claims arrive in the bearer (Day 2 = Cloud Run signed
+// identity + signed tenant claim), the agent MUST send the same business_id
+// it received from the orchestrator session. The MCP server validates the
+// shape, then narrows every query by that id. Cross-tenant traversal is only
+// possible if the agent runtime is compromised — the bearer + UUID validation
+// catch the "/etc/passwd" style direct attacks.
+
 const ok = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
 });
@@ -25,7 +38,7 @@ export function buildServer(): McpServer {
       description:
         "Load a booking that has been cancelled, including service, staff, time window, and the cancelling customer's id.",
       inputSchema: {
-        booking_id: z.string().describe("UUID of the cancelled booking."),
+        booking_id: uuid().describe("UUID of the cancelled booking."),
       },
     },
     async ({ booking_id }) => {
@@ -50,7 +63,7 @@ export function buildServer(): McpServer {
       description:
         "Return active waitlist entries for a salon, with the preferred service, time window, and customer summary.",
       inputSchema: {
-        business_id: z.string().describe("UUID of the business (salon)."),
+        business_id: uuid().describe("UUID of the business (salon)."),
         limit: z.number().int().positive().max(50).optional(),
       },
     },
@@ -75,7 +88,7 @@ export function buildServer(): McpServer {
       title: "Get customer",
       description: "Load a customer profile including phone, language preference, and loyalty stats.",
       inputSchema: {
-        customer_id: z.string().describe("UUID of the customer."),
+        customer_id: uuid().describe("UUID of the customer."),
       },
     },
     async ({ customer_id }) => {
@@ -98,7 +111,7 @@ export function buildServer(): McpServer {
       title: "Get service",
       description: "Load a salon service (name, duration, price, category).",
       inputSchema: {
-        service_id: z.string().describe("UUID of the service."),
+        service_id: uuid().describe("UUID of the service."),
       },
     },
     async ({ service_id }) => {
@@ -118,7 +131,7 @@ export function buildServer(): McpServer {
       title: "Get review",
       description: "Load a Google review row by id with rating, text, reviewer first name, and business id.",
       inputSchema: {
-        review_id: z.string().describe("UUID of the review."),
+        review_id: uuid().describe("UUID of the review."),
       },
     },
     async ({ review_id }) => {
@@ -140,7 +153,7 @@ export function buildServer(): McpServer {
       title: "Get business profile",
       description: "Load the salon profile: name, owner first name, vibe (formal/playful), languages.",
       inputSchema: {
-        business_id: z.string().describe("UUID of the business."),
+        business_id: uuid().describe("UUID of the business."),
       },
     },
     async ({ business_id }) => {
@@ -161,10 +174,8 @@ export function buildServer(): McpServer {
       description:
         "Return a per-(day,hour) occupancy table for the week starting at target_week_start (ISO date, Monday).",
       inputSchema: {
-        business_id: z.string(),
-        target_week_start: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD"),
+        business_id: uuid(),
+        target_week_start: isoDate(),
       },
     },
     async ({ business_id, target_week_start }) => {
@@ -183,7 +194,7 @@ export function buildServer(): McpServer {
       title: "List top services",
       description: "Top N services by booking count over the last 90 days for a salon.",
       inputSchema: {
-        business_id: z.string(),
+        business_id: uuid(),
         limit: z.number().int().positive().max(20).default(5),
       },
     },
