@@ -298,6 +298,12 @@ async def dashboard(request: Request) -> str:
         for q in queue
     ) or _row_html(["—", "<i>queue empty</i>", "", ""])
 
+    just_ran = request.query_params.get("ran") == "demo"
+    demo_banner = (
+        '<div class="ok">Demo run complete. Refresh in a few seconds if rows '
+        "are still appearing — each event spends ~10-30 s in the agent loop.</div>"
+        if just_ran else ""
+    )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>glossgo Salon Co-Pilot — agent dashboard</title>
@@ -305,7 +311,7 @@ async def dashboard(request: Request) -> str:
   body {{ font: 14px/1.45 system-ui, sans-serif; max-width: 980px; margin: 32px auto;
           padding: 0 24px; color: #1c1924; background: #faf8fb; }}
   h1 {{ font-size: 22px; margin: 0 0 4px; }}
-  .meta {{ color: #64596f; margin-bottom: 32px; }}
+  .meta {{ color: #64596f; margin-bottom: 24px; }}
   h2 {{ font-size: 16px; margin: 28px 0 10px; }}
   table {{ width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px;
            overflow: hidden; box-shadow: 0 1px 3px rgba(20,5,40,.06); }}
@@ -315,15 +321,28 @@ async def dashboard(request: Request) -> str:
   tr:last-child td {{ border-bottom: none; }}
   td:nth-child(4) {{ font-family: ui-monospace, Menlo, monospace; font-size: 12px;
                       color: #4a3e5a; }}
-  form {{ margin: 0; }}
+  form {{ margin: 0; display: inline; }}
   button {{ background: #6f3aac; color: #fff; border: none; padding: 4px 10px;
             border-radius: 4px; font: inherit; cursor: pointer; }}
+  .actions {{ display: flex; gap: 12px; align-items: center; margin: 16px 0 24px; }}
+  .actions form button {{ padding: 8px 16px; font-weight: 600; }}
+  .ok {{ background: #e8f6ec; color: #1c553d; padding: 10px 14px; border-radius: 6px;
+          margin: 14px 0; }}
 </style></head>
 <body>
 <h1>glossgo Salon Co-Pilot</h1>
 <p class="meta">Agent activity, read-only.
-Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue</code>.
-Refresh to see the latest events.</p>
+Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue</code>.</p>
+
+<div class="actions">
+  <form method="post" action="/dashboard/demo">
+    <input type="hidden" name="csrf" value="{_esc(csrf)}">
+    <button>▶ Trigger demo (3 events)</button>
+  </form>
+  <span class="meta">Fires booking.cancelled + review.created + calendar.weekly_review
+  in parallel through Gemini 2.5 Flash + ADK + MCP. ~30 s wall clock.</span>
+</div>
+{demo_banner}
 
 <h2>Pending owner approvals</h2>
 <table><thead><tr><th>when</th><th>channel</th><th>payload</th><th></th></tr></thead>
@@ -333,6 +352,73 @@ Refresh to see the latest events.</p>
 <table><thead><tr><th>when</th><th>kind</th><th>mode</th><th>payload</th></tr></thead>
 <tbody>{actions_rows}</tbody></table>
 </body></html>"""
+
+
+# Pre-seeded demo events the "Trigger demo" button replays. Keys are the
+# 3 event types the orchestrator routes; values are the payload the button
+# fires internally so judges don't have to copy curl commands.
+DEMO_EVENTS = [
+    {
+        "type": "booking.cancelled",
+        "business_id": "11111111-0000-0000-0000-000000000001",
+        "booking_id": "55555555-0000-0000-0000-000000000001",
+    },
+    {
+        "type": "review.created",
+        "business_id": "11111111-0000-0000-0000-000000000001",
+        "review_id": "77777777-0000-0000-0000-000000000003",
+    },
+    {
+        "type": "calendar.weekly_review",
+        "business_id": "11111111-0000-0000-0000-000000000001",
+        "target_week_start": "2026-06-09",
+    },
+]
+
+
+@app.post("/dashboard/demo")
+async def dashboard_demo(request: Request) -> "Response":  # noqa: F821
+    """Fire all three demo events into the orchestrator in parallel.
+
+    Same auth + CSRF gate as /approve. Each event runs through the FULL
+    pipeline (Gemini routing -> sub-agent -> MCP tool calls -> Supabase),
+    so after this returns, the dashboard reload shows the actions and
+    approval-queue rows the agents produced. ~30 s wall clock for all 3.
+    """
+    import asyncio
+
+    from fastapi.responses import RedirectResponse
+
+    _require_dashboard_session(request)
+    form = await request.form()
+    _require_csrf(request, form.get("csrf"))
+
+    async def _run_event(event: dict[str, object]) -> None:
+        session_id = f"demo-{uuid.uuid4().hex[:10]}"
+        user_id = str(event.get("business_id", "system"))
+        prompt = (
+            "A new salon event has arrived. Route it appropriately.\n\n"
+            f"Event payload (JSON):\n{json.dumps(event, ensure_ascii=False, indent=2)}"
+        )
+        session = await _runner.session_service.create_session(
+            app_name=_runner.app_name, user_id=user_id, session_id=session_id,
+        )
+        async for _ in _runner.run_async(
+            user_id=user_id, session_id=session.id,
+            new_message=genai_types.Content(
+                role="user", parts=[genai_types.Part.from_text(text=prompt)],
+            ),
+        ):
+            pass
+
+    # Run all three concurrently. Individual failures are swallowed so a
+    # rate-limit on one model call doesn't hide the other two.
+    results = await asyncio.gather(*[_run_event(e) for e in DEMO_EVENTS], return_exceptions=True)
+    failed = [type(r).__name__ for r in results if isinstance(r, Exception)]
+    if failed:
+        print(f"[dashboard.demo] {len(failed)}/{len(DEMO_EVENTS)} failed: {failed}", flush=True)
+
+    return RedirectResponse(url="/dashboard?ran=demo", status_code=303)
 
 
 @app.post("/dashboard/{approval_id}/approve")
