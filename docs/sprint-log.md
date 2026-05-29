@@ -72,3 +72,96 @@ Daily progress against the 8-day plan in
 - Identity-aware MCP auth (replace shared bearer with Cloud Run signed identity + tenant claim).
 - `/healthz` → `/ready` rename.
 - Owner approval UI on partner.glossgo.com/copilot.
+
+## Day 3 — 2026-05-29 (continued, evening) — security pass + multi-agent E2E
+
+**Goal.** Close SECURITY.md Gap 1's identity layer (OIDC MCP auth), rename
+/healthz, run all three sub-agents end-to-end on the public Cloud Run URL.
+
+**Shipped.**
+- `/healthz` → `/ready` (Cloud Run GFE reserves `/healthz` and returns its
+  own 404 even when our FastAPI registers the route).
+- OIDC ID token fetcher landed (`_fetch_id_token`, audience derived from
+  the MCP service URL with `/mcp` stripped) but gated behind `MCP_USE_OIDC=1`.
+  Cloud Run validated our metadata-server-issued tokens with
+  `WWW-Authenticate: Bearer error=invalid_token, error_description="The
+  access token could not be verified"` — same failure when impersonating
+  the runtime SA locally via `gcloud auth print-identity-token`. Deferred
+  to Day 6 for a fresh debug pass; static `MCP_BEARER_TOKEN` remains the
+  primary auth layer in the meantime. `SECURITY.md` updated.
+- Caught a credential-leak in the OIDC instrumentation (`token[:24]=…` in
+  a print line) before any token reached production and replaced it with
+  a `auth=oidc / static-bearer / NONE` log instead.
+
+**Multi-agent E2E on the public URL (all green).**
+- no-show-recovery: `booking.cancelled` → Zeynep Kaya match (perfect
+  service + time-window + loyalty fit) → Turkish WhatsApp draft.  28 s.
+- review-responder (2★): `review.created` → empathetic Turkish reply →
+  pushed to `owner_approval_queue`.  17 s.
+- review-responder (5★): same path, thankful tone, queue id returned. 12 s.
+- calendar-optimizer: `calendar.weekly_review` → returned "no occupancy
+  data" for an empty-schedule week (correct behavior — refused to invent
+  a campaign without input).  4 s.
+
+**Surprises (and what we shipped to fix them).**
+- ADK's `LlmAgent` treats the instruction string as a `str.format()`
+  template and substitutes session variables. The review-responder
+  instruction had `{text}` and `{profile.id}` as illustrative placeholders;
+  ADK saw them as undefined context variables and raised `KeyError:
+  'Context variable not found: text'`. Rewrote the instruction to describe
+  the substitution and the JSON payload shape in plain English with no
+  literal braces.
+
+## Day 4–5 — 2026-05-29 (late) — owner UI + prompt-injection hardening
+
+**Owner UI (`apps/orchestrator/main.py`).**
+- `GET /dashboard` — read-only HTML view of `copilot.agent_actions`
+  (last 25) and the pending `copilot.owner_approval_queue`. Inline CSS,
+  no external assets.
+- `POST /dashboard/{id}/approve` — idempotent transition to
+  `status='approved'`; double-clicks return 404 not silent re-approve.
+- Auth: cookie session (`copilot_dash`, HMAC-signed with the dashboard
+  token, HttpOnly + Secure + SameSite=Strict + 4 h TTL) OR
+  `Authorization: Bearer …` for scripts. Browser flow:
+  `GET /dashboard/login` form → `POST /dashboard/login` validates with
+  `hmac.compare_digest` → 303 to `/dashboard` with cookies set.
+- CSRF: per-session HMAC-signed nonce in a non-HttpOnly companion
+  cookie (`copilot_csrf`), echoed into a hidden form field. Approve
+  handler verifies the nonce AND that the request's Origin/Referer
+  hostname matches the request's Host header.
+- `COPILOT_DASHBOARD_TOKEN` is a SEPARATE Secret Manager entry from
+  `COPILOT_WEBHOOK_BEARER` (the security review caught a fall-through;
+  fixed). Orchestrator fails to boot if the dashboard token is set but
+  <16 chars.
+
+**Prompt-injection defense moved server-side (mcp-data `get_review`).**
+The MCP server now wraps the review's `text` field in
+`<<<UNTRUSTED_REVIEW_TEXT>>>...<<<END_UNTRUSTED_REVIEW_TEXT>>>` before
+returning it. A model that forgets to add the delimiters can still no
+longer smuggle raw attacker bytes into its reasoning context. The server
+also strips C0/C1 controls, zero-width / bidi-override characters,
+neutralizes `system:` / `assistant:` role prefixes, and disarms any
+literal close-delimiter the attacker tried to inject.
+
+**Verification (11 / 11 green on the public URL).**
+
+| # | Expected | Got |
+|---|---|---|
+| 1: `/dashboard` no auth | 401 | 401 |
+| 2: `?token=…` URL ignored | 401 | 401 |
+| 3: `/dashboard` with `Authorization: Bearer` | 200 | 200 |
+| 4: `/dashboard/login` wrong token | 401 | 401 |
+| 5: `/dashboard/login` correct → 303 → `/dashboard` | 200 | 303 + 200 |
+| 6: `/dashboard` with stored cookie | rows | 200 + 4 rows |
+| 7: approve without CSRF | 403 | 403 |
+| 8: approve with cookie + CSRF + Origin | 200 | 200 + JSON |
+| 9: re-approve same id | 404 | 404 |
+| 10: approve with wrong CSRF token | 403 | 403 |
+| 11: approve with hostile Origin | 403 | 403 |
+
+**Still pending.**
+- Per-owner identity → per-tenant `business_id` row scoping (`SECURITY.md`
+  Gap 6 'still pending'). Day 7.
+- OIDC MCP audience debug + re-lock MCPs to `--no-allow-unauthenticated`.
+  Day 6.
+- Demo video + architecture PNG + Devpost write-up polish. Day 6–7.
