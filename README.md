@@ -12,6 +12,7 @@
 |---|---|
 | Orchestrator (POST `/event`) | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app |
 | Owner dashboard (cookie session) | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/dashboard/login |
+| Observability rollups | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/dashboard/stats |
 | Liveness probe (public) | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/ready |
 
 Demo tokens are shared with Devpost judges via the participant DM.

@@ -85,6 +85,15 @@ The challenge's emphasis on ADK and MCP shaped the structure directly:
 
   ![dashboard](img/dashboard.png)
 
+- **Observability at `/dashboard/stats`** — read-only rollups over the
+  same `copilot.*` tables, no JS, no charting library. KPIs (actions / 24h,
+  / 7d, total, mean time to approval) and four bar-chart panels (by kind,
+  by mode, by status, by channel). Shadow-mode percentage is rendered
+  explicitly so a reader can verify at a glance that no real WhatsApp
+  messages went out during the demo.
+
+  ![stats](img/stats.png)
+
 - **Demo data** sits in a `copilot` schema on the existing glossgo
   Supabase project. The schema is fully isolated from `public.*`, exposed
   via PostgREST only to `service_role`, and seeded with a fictional
