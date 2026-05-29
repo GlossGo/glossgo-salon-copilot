@@ -248,3 +248,68 @@ video script, and bake the Devpost submission checklist.
 - Per-tenant `business_id` JWT claim (SECURITY.md Gap 6).
 - Recording the actual demo video (script is ready; Bilal records).
 - Submitting on Devpost.
+
+## Day 7 final — 2026-05-29 — 4 new surfaces for the judges
+
+User opted in to four feature additions to differentiate the submission
+(skipped real Çağlar Kaya pilot — too operationally risky).
+
+**Bilingual dashboard.** Every new agent action now emits a one-line
+`decision_summary_en` next to the Turkish customer draft, surfaced as a
+green pill on `/dashboard`. Older rows fall back gracefully to raw payload.
+2 services rebuilt (orchestrator + mcp-comms); 5 files changed.
+
+**Agent reasoning trace.** New `copilot.agent_traces` table, captures every
+ADK event during `/event` runs (routing, tool calls, tool responses, final
+draft). Renders at `/dashboard/trace/{session_id}`. Verified: a typical
+no-show-recovery run produced 13 captured events (1 routing + 6 tool calls
++ 6 tool responses). Dashboard gains a "Recent reasoning traces" panel
+linking the last 5 session ids.
+
+**Marketplace economics calculator at `/dashboard/economics`.** Pure
+CSS + vanilla JS sliders, no backend deps beyond auth. Five inputs, three
+KPI groups, two pricing tiers (Pro ₺199, Business ₺499). Defaults match
+glossgo's actual operating numbers.
+
+**Landing page at `apps/landing/index.html`.** 12 KB hand-written
+responsive HTML. Deployed to https://glossgo-copilot.pages.dev via
+wrangler. Custom domain copilot.glossgo.com attached on Pages side
+(status: pending) — the existing `100::` AAAA record from softween-hub
+needs a manual DNS swap in the CF dashboard (current token lacks
+DNS.Edit on glossgo.com zone). Documented in `apps/landing/README.md`.
+
+**Multi-LLM battle at `/dashboard/battle`.** Same Turkish no-show-recovery
+prompt fired in parallel at Gemini 2.5 Pro / Flash / Flash Lite on Vertex
+AI. Recorded run: Pro 6.07s/$0.00010, Flash 3.89s/$0.00001 (16× cheaper
+than Pro), Flash Lite 0.91s/$0.0000064 (fastest but starts dropping
+nuance). Makes the "we picked Flash" choice auditable. No external API
+keys — all on Vertex AI.
+
+**Final surfaces (all auth-gated except landing + /ready):**
+
+| Surface | URL |
+|---|---|
+| Landing | <https://glossgo-copilot.pages.dev> |
+| Liveness | <https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/ready> |
+| Login | …/dashboard/login |
+| Operator dashboard | …/dashboard |
+| Trigger demo | POST …/dashboard/demo |
+| Reasoning trace | …/dashboard/trace/{session_id} |
+| Stats rollups | …/dashboard/stats |
+| Economics calculator | …/dashboard/economics |
+| Model battle | …/dashboard/battle |
+| Approve a draft | POST …/dashboard/{id}/approve |
+| Event ingestion | POST …/event (bearer-auth, no cookie) |
+
+**Commit log (this session):**
+- `ff7321e` bilingual dashboard contract
+- `38b4711` judges-guide bilingual writeup
+- `59733c5` /dashboard/trace + agent_traces table
+- `b7b0082` trace screenshot
+- `330143b` /dashboard/economics
+- `b3202cc` economics screenshot
+- `8578dac` apps/landing + CF Pages deploy
+- `263d778` /dashboard/battle
+- `08a5514` battle screenshot
+
+**Day 8 (user-only): record 90s video + submit.**
