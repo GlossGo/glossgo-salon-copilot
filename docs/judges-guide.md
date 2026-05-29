@@ -97,6 +97,16 @@ The challenge's emphasis on ADK and MCP shaped the structure directly:
   fields, so the bilingual surface is part of the data contract,
   not just dashboard chrome.
 
+- **White-box reasoning trace at `/dashboard/trace/{session_id}`** —
+  every `/event` run is captured as a chronological event timeline:
+  routing decision, every tool call (with arg JSON), every tool response
+  (truncated to 400 chars), every LLM reasoning step. Most hackathon
+  agents are black boxes that say "trust me". We let the judge follow
+  the Gemini thought-and-action chain end-to-end. Recent trace sessions
+  are linked from the dashboard's bottom panel.
+
+  ![trace](img/trace.png)
+
 - **Observability at `/dashboard/stats`** — read-only rollups over the
   same `copilot.*` tables, no JS, no charting library. KPIs (actions / 24h,
   / 7d, total, mean time to approval) and four bar-chart panels (by kind,
