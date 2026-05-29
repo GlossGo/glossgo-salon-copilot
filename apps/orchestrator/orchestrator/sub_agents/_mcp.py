@@ -56,23 +56,33 @@ def _fetch_id_token(audience: str) -> str | None:
         request = google.auth.transport.requests.Request()
         return google.oauth2.id_token.fetch_id_token(request, audience)
     except Exception as exc:
-        logger.warning("ID token fetch for %s failed: %s", audience, exc)
+        print(f"[mcp] id_token fetch for {audience} FAILED: {type(exc).__name__}: {exc}", flush=True)
         return None
 
 
 def _remote_auth_headers(url: str) -> dict[str, str]:
-    """Build the Authorization header for the http/sse transport."""
+    """Build headers for the http/sse transport.
+
+    The MCP Streamable HTTP spec requires `Accept: application/json,
+    text/event-stream`. Some httpx defaults strip the second media type;
+    set it explicitly here.
+    """
     audience = _audience_from_url(url)
+    headers: dict[str, str] = {
+        "Accept": "application/json, text/event-stream",
+    }
     id_token = _fetch_id_token(audience)
     if id_token:
-        logger.info("mcp[%s] using OIDC id_token", audience)
-        return {"Authorization": f"Bearer {id_token}"}
+        print(f"[mcp] {audience} OIDC ok, token[:24]={id_token[:24]}...", flush=True)
+        headers["Authorization"] = f"Bearer {id_token}"
+        return headers
     static_bearer = os.environ.get("MCP_BEARER_TOKEN", "")
     if static_bearer:
-        logger.info("mcp[%s] using static MCP_BEARER_TOKEN fallback", audience)
-        return {"Authorization": f"Bearer {static_bearer}"}
-    logger.warning("mcp[%s] no auth header available", audience)
-    return {}
+        print(f"[mcp] {audience} OIDC unavailable, using static bearer", flush=True)
+        headers["Authorization"] = f"Bearer {static_bearer}"
+        return headers
+    print(f"[mcp] {audience} NO AUTH HEADER", flush=True)
+    return headers
 
 
 def _stdio_toolset(
