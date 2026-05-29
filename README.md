@@ -1,92 +1,141 @@
 # glossgo Salon Co-Pilot
 
-> Autonomous multi-agent system that runs a beauty salon's marketing + operations while the owner sleeps.
+> Autonomous multi-agent system that runs a beauty salon's marketing,
+> reviews, and waitlist matching while the owner is busy.
 > **Submission for the Google for Startups AI Agents Challenge, Track 1 (Build).**
+
+[![architecture](docs/img/architecture.png)](docs/architecture.mmd)
+
+## Live now
+
+| Surface | URL |
+|---|---|
+| Orchestrator (POST `/event`) | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app |
+| Owner dashboard (cookie session) | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/dashboard/login |
+| Liveness probe (public) | https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/ready |
+
+Demo tokens are shared with Devpost judges via the participant DM.
 
 ## What it does
 
-When something happens at a salon (a customer cancels, a Google review drops, the next week is suddenly empty), an orchestrator agent routes the event to a specialist sub-agent that takes autonomous action via Model Context Protocol (MCP) tools.
+When something happens at a salon (a customer cancels, a Google review
+drops, the next week is suddenly empty), an orchestrator agent routes
+the event to a specialist sub-agent that takes autonomous action via
+Model Context Protocol (MCP) tools.
 
-| Trigger | Sub-agent | Action |
-|---|---|---|
-| `booking.cancelled` | No-Show Recovery | Pick best waitlist match, draft personalized WhatsApp, send, handle reply, create booking |
-| `review.created` (Google) | Review Responder | Draft tone-matched Turkish response, push to owner approval queue |
-| Weekly cron | Calendar Optimizer | Analyze empty slots, draft off-peak promo, push campaign draft for approval |
+| Trigger | Sub-agent | Action | Live wall clock |
+|---|---|---|---|
+| `booking.cancelled` | No-Show Recovery | Pick best waitlist match (50-30-20 service / time / loyalty), draft personalized Turkish WhatsApp, shadow-mode send | **28 s** |
+| `review.created` (2★) | Review Responder | Empathetic Turkish reply, push to owner approval queue | **17 s** |
+| `review.created` (5★) | Review Responder | Thankful reply + come-back invite, push to queue | **12 s** |
+| `calendar.weekly_review` | Calendar Optimizer | Find the biggest off-peak gap, draft promo + audience tag | **4 s** (refuses to invent on empty schedule) |
+
+![dashboard](docs/img/dashboard.png)
 
 ## Stack
 
-- **Agent framework**: [Google Agent Development Kit (ADK)](https://google.github.io/adk-docs/) — Python
-- **Foundation model**: Gemini 2.5 Pro (orchestrator) + Gemini 2.5 Flash (sub-agents)
-- **Tool protocol**: 3 standalone [Model Context Protocol](https://modelcontextprotocol.io/) servers (TypeScript)
-- **Hosting**: Cloud Run (each agent + each MCP server is its own service)
-- **Trigger bus**: Cloudflare Worker webhook → Google Pub/Sub → ADK orchestrator
-- **Database**: Existing glossgo production Supabase (read-only via MCP)
-- **Observability**: Vertex AI Agent Engine traces + PostHog `$ai_generation` events
-
-## Architecture
-
-![architecture](docs/img/architecture.png)
-
-Source: [`docs/architecture.mmd`](docs/architecture.mmd). Re-render with
-`npx -p @mermaid-js/mermaid-cli mmdc -i docs/architecture.mmd -o docs/img/architecture.png -b transparent -w 2400 -t neutral`.
-
-The diagram shows the target architecture. Today's deployment matches it
-except for one temporary relaxation called out in
-[`docs/SECURITY.md`](docs/SECURITY.md) Gap 1: MCP services run with
-`--ingress=all` and `allUsers` as `run.invoker` while the OIDC audience
-validation is debugged. The container-level static bearer
-(`MCP_BEARER_TOKEN`) is the actual auth gate today; Day 6 swaps it for
-Cloud Run signed identity + re-locks the ingress.
+- **Agent framework** — [Google Agent Development Kit 2.1](https://google.github.io/adk-docs/) (Python)
+- **Foundation model** — Gemini 2.5 Flash on Vertex AI (orchestrator + sub-agents)
+- **Tool protocol** — 3 standalone [Model Context Protocol](https://modelcontextprotocol.io/) servers (TypeScript, Streamable HTTP + stdio dual transport)
+- **Hosting** — Cloud Run × 4 services, europe-west4
+- **Secret management** — Google Secret Manager, no `.env` in the repo
+- **Data** — Isolated `copilot` schema on the existing glossgo Supabase project
+- **Owner UI** — FastAPI `/dashboard` with HMAC-signed cookie session + CSRF nonce + Origin pin
+- **Observability** — `print(flush=True)` tracing per agent action → Cloud Logging (Vertex AI Agent Engine traces are Day 6 work)
 
 ## Repo layout
 
 ```
 apps/
-  orchestrator/             # ADK root agent (Python, Gemini 2.5 Pro)
-  agent-no-show-recovery/   # ADK sub-agent (Python, Gemini 2.5 Flash)
-  agent-review-responder/   # ADK sub-agent
-  agent-calendar-optimizer/ # ADK sub-agent
-  mcp-data/                 # MCP server: Supabase read (TypeScript)
-  mcp-comms/                # MCP server: WhatsApp send (TypeScript)
-  mcp-calendar/             # MCP server: booking write (TypeScript)
-packages/
-  shared/                   # Shared types + prompts + eval harness
-infra/
-  cloudrun/                 # service.yaml per service
-scripts/
-  seed-demo-salon.ts        # Day-1 demo data seed
+  orchestrator/                    # ADK root agent + FastAPI HTTP entry (Python)
+    orchestrator/sub_agents/       # No-Show Recovery + Review Responder + Calendar Optimizer
+    main.py                        # POST /event, /dashboard, /dashboard/login, /dashboard/demo, /dashboard/{id}/approve, /ready
+  mcp-data/                        # MCP server — read-only Supabase via supabase-js
+  mcp-comms/                       # MCP server — WhatsApp + owner approval queue (shadow-mode by default)
+  mcp-calendar/                    # MCP server — booking writes (idempotency_key)
 docs/
-  architecture.md
-  judges-guide.md
+  judges-guide.md                  # Devpost write-up (paste-able by section)
+  architecture.mmd                 # Mermaid source for the diagram above
+  SECURITY.md                      # Trust model + 6 gaps + fix plan per gap
+  sprint-log.md                    # Daily progress notes — every bug + fix, in order
+  deploy.md                        # Cloud Run deploy recipe
+  img/                             # architecture.png + dashboard.png
+scripts/
+  run-local.sh                     # Boots orchestrator (stdio MCP) against Doppler secrets
+  deploy-cloudrun.sh               # Idempotent rebuild + redeploy of all 4 services
 ```
 
-## Quick start
+## Judges' 4-curl quickstart
 
 ```bash
-pnpm install
-pnpm -r build
-pnpm dev                    # Boot all 7 services locally
+ORCH=https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app
+WB=<webhook-bearer-from-devpost>   # ask the team if you can't find it
 
-# In another terminal, trigger an event:
-curl -X POST localhost:8080/event \
+# 1) Liveness
+curl -sS "$ORCH/ready"
+
+# 2) Trigger No-Show Recovery → Zeynep Kaya match + Turkish draft (~28 s)
+curl -sS -X POST "$ORCH/event" \
+  -H "Authorization: Bearer $WB" \
   -H 'Content-Type: application/json' \
-  -d '{"type":"booking.cancelled","booking_id":"demo-bk-001"}'
+  -d '{"type":"booking.cancelled",
+       "business_id":"11111111-0000-0000-0000-000000000001",
+       "booking_id":"55555555-0000-0000-0000-000000000001"}'
+
+# 3) Trigger Review Responder on a seeded 2★ review (~17 s)
+curl -sS -X POST "$ORCH/event" \
+  -H "Authorization: Bearer $WB" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"review.created",
+       "business_id":"11111111-0000-0000-0000-000000000001",
+       "review_id":"77777777-0000-0000-0000-000000000003"}'
+
+# 4) Open the dashboard, log in, click "Trigger demo" — fires all 3 in parallel
+#    https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/dashboard/login
+```
+
+## Local quickstart (no GCP needed)
+
+Boots the orchestrator with each MCP server as a `node` stdio subprocess.
+
+```bash
+git clone https://github.com/GlossGo/glossgo-salon-copilot
+cd glossgo-salon-copilot
+pnpm install && pnpm -r build
+
+cd apps/orchestrator
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cd ../..
+
+export GOOGLE_API_KEY=<your-gemini-api-key>
+export SUPABASE_URL=https://<your-project>.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=<your-key>
+./scripts/run-local.sh
+
+# In another terminal:
+WB=$(grep COPILOT_WEBHOOK_BEARER /tmp/copilot-* 2>/dev/null | head -1)
+curl -X POST http://localhost:8080/event \
+  -H "Authorization: Bearer $WB" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"booking.cancelled","business_id":"<demo-uuid>","booking_id":"<demo-uuid>"}'
 ```
 
 ## Cloud deploy
 
 ```bash
-./scripts/deploy-cloudrun.sh    # uses PROJECT=glossgo-copilot, REGION=europe-west4
+./scripts/deploy-cloudrun.sh        # rebuild + redeploy all 4 services
 ```
 
-Full deploy walkthrough (one-time prerequisites + redeploy loop):
-[`docs/deploy.md`](docs/deploy.md). Trust model + auth controls:
-[`docs/SECURITY.md`](docs/SECURITY.md). Architecture diagram source:
-[`docs/architecture.mmd`](docs/architecture.mmd).
+One-time prerequisites + redeploy loop: [`docs/deploy.md`](docs/deploy.md).
 
-## Status
+## Documentation
 
-Active development. See [`docs/sprint-log.md`](docs/sprint-log.md) for daily progress.
+- [`docs/judges-guide.md`](docs/judges-guide.md) — Devpost write-up (paste-able)
+- [`docs/SECURITY.md`](docs/SECURITY.md) — trust model + 6 gaps + Day 6/7 fix plan
+- [`docs/sprint-log.md`](docs/sprint-log.md) — every bug we hit and how we fixed it
+- [`docs/architecture.mmd`](docs/architecture.mmd) — Mermaid source for the diagram above
+- [`docs/deploy.md`](docs/deploy.md) — Cloud Run deploy recipe
 
 ## License
 
