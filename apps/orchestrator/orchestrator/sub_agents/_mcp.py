@@ -56,6 +56,7 @@ def _fetch_id_token(audience: str) -> str | None:
         request = google.auth.transport.requests.Request()
         return google.oauth2.id_token.fetch_id_token(request, audience)
     except Exception as exc:
+        # NEVER log the token; only the exception type/message.
         print(f"[mcp] id_token fetch for {audience} FAILED: {type(exc).__name__}: {exc}", flush=True)
         return None
 
@@ -66,22 +67,35 @@ def _remote_auth_headers(url: str) -> dict[str, str]:
     The MCP Streamable HTTP spec requires `Accept: application/json,
     text/event-stream`. Some httpx defaults strip the second media type;
     set it explicitly here.
+
+    Auth selection (NEVER log token contents — even partial JWTs leak
+    headers/audience/exp claims):
+      1. Static `MCP_BEARER_TOKEN` (matches what the MCP container's
+         Express middleware verifies with `crypto.timingSafeEqual`).
+         This is the primary auth layer today.
+      2. If `MCP_USE_OIDC=1` AND no static bearer is set, fetch an OIDC
+         ID token from the Cloud Run metadata server. We keep this code
+         path for when Day 6 lands the matching server-side validator
+         that accepts Google-signed tokens with `audience == service_url`.
+         Until then, Cloud Run rejected our OIDC tokens with
+         "access token could not be verified" — see SECURITY.md Gap 1.
     """
     audience = _audience_from_url(url)
     headers: dict[str, str] = {
         "Accept": "application/json, text/event-stream",
     }
-    id_token = _fetch_id_token(audience)
-    if id_token:
-        print(f"[mcp] {audience} OIDC ok, token[:24]={id_token[:24]}...", flush=True)
-        headers["Authorization"] = f"Bearer {id_token}"
-        return headers
     static_bearer = os.environ.get("MCP_BEARER_TOKEN", "")
     if static_bearer:
-        print(f"[mcp] {audience} OIDC unavailable, using static bearer", flush=True)
+        print(f"[mcp] {audience} auth=static-bearer", flush=True)
         headers["Authorization"] = f"Bearer {static_bearer}"
         return headers
-    print(f"[mcp] {audience} NO AUTH HEADER", flush=True)
+    if os.environ.get("MCP_USE_OIDC", "0") == "1":
+        id_token = _fetch_id_token(audience)
+        if id_token:
+            print(f"[mcp] {audience} auth=oidc", flush=True)
+            headers["Authorization"] = f"Bearer {id_token}"
+            return headers
+    print(f"[mcp] {audience} auth=NONE", flush=True)
     return headers
 
 

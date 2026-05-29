@@ -46,23 +46,35 @@ known gaps with a plan for each.
 
 ### Gap 1 — Single shared MCP bearer = no per-tenant identity (IDOR risk)
 
-Identity layer SHIPPED 2026-05-29 (Day 3); authorization layer (per-tenant
-claim) still pending.
+Status as of 2026-05-29 (Day 3): client-side OIDC fetch SHIPPED behind a
+feature flag (`MCP_USE_OIDC=1`); MCP servers still verify only the
+static `MCP_BEARER_TOKEN`; ingress is back to `all` with `allUsers` as
+`run.invoker`. Day 3 attempt to fully close this gap was reverted —
+documented below.
 
-**Shipped (Day 3).**
-- Each MCP service runs `--no-allow-unauthenticated` with
-  `--ingress=internal-and-cloud-load-balancing`.
-- Orchestrator runtime SA `copilot-runtime@glossgo-copilot.iam.gserviceaccount.com`
-  is IAM-bound as `roles/run.invoker` on `copilot-mcp-data`,
-  `copilot-mcp-comms`, `copilot-mcp-calendar`.
-- `_mcp.py` fetches a Google-signed OIDC ID token from the Cloud Run metadata
-  server (audience = the MCP service's URL, stripped of `/mcp`) and injects
-  it as the `Authorization: Bearer` header on the Streamable HTTP connection.
-  Cloud Run validates the signature upstream — the request only reaches the
-  container if the caller's identity has `run.invoker`.
-- The static `MCP_BEARER_TOKEN` remains as a fallback for local
-  `MCP_TRANSPORT=http` testing (no metadata server). On Cloud Run, the
-  metadata server is always present, so we always use OIDC there.
+**Shipped (Day 3, behind a flag).**
+- `_mcp.py` can fetch a Google-signed OIDC ID token from the Cloud Run
+  metadata server (audience = MCP service URL, `/mcp` stripped) and inject
+  it as the `Authorization: Bearer` header. Gated on `MCP_USE_OIDC=1`.
+  Default is the static bearer to match the current MCP servers.
+- Each MCP container's Express middleware uses `crypto.timingSafeEqual`
+  on the static `MCP_BEARER_TOKEN`.
+
+**Reverted (Day 3, will retry Day 6).**
+- Locking the MCP services to `--no-allow-unauthenticated` with the
+  orchestrator runtime SA bound as `run.invoker` worked at the IAM layer
+  (direct curl from a non-bound principal got the expected Cloud Run
+  403). The orchestrator's metadata-server-issued OIDC tokens were
+  rejected by Cloud Run with `WWW-Authenticate: Bearer error=invalid_token,
+  error_description="The access token could not be verified"`. Same
+  failure with SA-impersonated tokens generated locally. With the gen2
+  Cloud Run frontend, the strict `aud` claim match between our token
+  and Cloud Run's expected audience is something to verify in a fresh
+  debug pass — Day 6 work item.
+- Until then: ingress=all, `allUsers` bound as `run.invoker`, container
+  bearer is the only auth gate. Acceptable because the static bearer is
+  a 32-byte secret kept in Secret Manager and the MCP servers also
+  enforce strict Zod regexes on every UUID/E.164/timestamp input.
 
 **Still pending — authorization layer.**
 The orchestrator's SA can invoke the MCPs. The MCPs cannot distinguish
@@ -70,10 +82,18 @@ between "caller is the orchestrator on tenant A's event" vs "tenant B's
 event." For cross-tenant traversal we still rely on the orchestrator
 passing the correct `business_id` argument.
 
-Next step (Day 4-5): add a `glossgo-be`-signed JWT in a custom header
-carrying the verified `business_id` claim. The MCP server checks the
-signature and rejects any tool call whose `business_id` argument doesn't
-match the claim.
+Next steps:
+- **Day 6** — Close the identity layer:
+  1. Reproduce the OIDC `audience` issue in a Cloud Shell with two
+     curl-only services to isolate from ADK behavior.
+  2. Once `gcloud auth print-identity-token --impersonate-service-account
+     copilot-runtime --audiences=<service_url>` validates, flip
+     `MCP_USE_OIDC=1` on the orchestrator and re-lock the MCPs to
+     `--no-allow-unauthenticated`.
+- **Day 7** — Add a `glossgo-be`-signed JWT in a custom header carrying
+  the verified `business_id` claim. The MCP server checks the signature
+  and rejects any tool call whose `business_id` argument doesn't match
+  the claim.
 
 ### Gap 2 — Orchestrator trusts the bearer to attest tenant
 
