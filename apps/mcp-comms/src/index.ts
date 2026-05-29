@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -43,11 +43,17 @@ async function runHttp() {
     }
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      sessionIdGenerator: undefined,
     });
     res.on("close", () => { transport.close(); server.close(); });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
+  });
+  app.get("/mcp", (_req: Request, res: Response) => {
+    res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "GET not supported in stateless mode" }, id: null });
+  });
+  app.delete("/mcp", (_req: Request, res: Response) => {
+    res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "DELETE not supported in stateless mode" }, id: null });
   });
   app.listen(PORT, () => console.log(`mcp-comms listening on :${PORT} (http)`));
 }
