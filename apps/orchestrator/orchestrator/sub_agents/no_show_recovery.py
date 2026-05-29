@@ -27,7 +27,8 @@ You receive a single `booking_id` for a booking that was just cancelled, and a `
 Workflow:
 1. Use `get_business_profile(business_id)` FIRST. Cache its `name` and `owner_first_name`.
    NEVER invent a salon name; always quote what this tool returned.
-2. Use `get_cancelled_booking(booking_id)` to load the cancelled slot.
+2. Use `get_cancelled_booking(booking_id, business_id)` to load the cancelled slot.
+   Always pass the `business_id` you were given; the server refuses cross-tenant lookups.
    Note the service_id, staff_id, start_time, and duration.
 3. Use `list_waitlist_for_business(business_id)` to load active waitlist entries.
 4. From the waitlist, pick the best match. Rank candidates by:
