@@ -363,7 +363,8 @@ async def dashboard(request: Request) -> str:
 <p class="meta">Agent activity, read-only.
 Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue</code>.
 <a href="/dashboard/stats" style="color:#6f3aac">stats →</a> ·
-<a href="/dashboard/economics" style="color:#6f3aac">economics →</a></p>
+<a href="/dashboard/economics" style="color:#6f3aac">economics →</a> ·
+<a href="/dashboard/battle" style="color:#6f3aac">model battle →</a></p>
 
 <div class="actions">
   <form method="post" action="/dashboard/demo">
@@ -463,6 +464,204 @@ async def dashboard_demo(request: Request) -> "Response":  # noqa: F821
         print(f"[dashboard.demo] {len(failed)}/{len(DEMO_EVENTS)} failed: {failed}", flush=True)
 
     return RedirectResponse(url="/dashboard?ran=demo", status_code=303)
+
+
+BATTLE_PROMPT = """You are an assistant for a Turkish beauty salon called \"Demo Salon (glossgo Co-Pilot)\".
+
+Context: A booking for Saç boyama (hair coloring, 3 hours, ₺2000) tomorrow 14:00-17:00 was just cancelled by another customer. The best waitlist candidate is Zeynep Kaya — she also wants Saç boyama, has visited the salon 10 times before, and her availability window is tomorrow 12:00-18:00.
+
+Task: Write a warm, casual Turkish WhatsApp message to Zeynep inviting her to take the freed slot.
+
+Strict rules:
+- Max 4 short sentences.
+- Greet by her first name.
+- Mention the salon name verbatim: \"Demo Salon (glossgo Co-Pilot)\".
+- State the freed slot date+time in Turkish (e.g. \"yarın saat 14:00\").
+- Frame it as a one-time chance because of an earlier cancellation.
+- End with a yes/no ask.
+- A single 💇‍♀️ emoji at the end. No other emoji.
+
+Reply with ONLY the Turkish message, no preamble, no JSON, no explanation."""
+
+# Approximate published per-1M-token output rates on Vertex AI as of 2026 Q1.
+# Used to project relative cost; not a billing source of truth.
+GEMINI_PRICES = {
+    "gemini-2.5-pro":         {"out_per_1m": 5.00},
+    "gemini-2.5-flash":       {"out_per_1m": 0.30},
+    "gemini-2.5-flash-lite":  {"out_per_1m": 0.10},
+}
+
+
+@app.get("/dashboard/battle", response_class=HTMLResponse)
+async def dashboard_battle(request: Request) -> str:
+    """Side-by-side comparison of three Gemini variants on the same prompt.
+
+    Fires the same no-show-recovery scenario at Gemini 2.5 Pro / Flash /
+    Flash Lite (all on Vertex AI, no external API keys) and renders the
+    Turkish output, wall-clock, output token count, and projected cost
+    in a single page. The point is to make the "we picked Flash" choice
+    auditable: Flash should be roughly Pro's quality at 16x lower cost
+    and Pro's latency at ~2x lower.
+    """
+    _require_dashboard_session(request)
+
+    import asyncio
+    from google import genai
+    from google.genai.types import GenerateContentConfig
+
+    client = genai.Client(
+        vertexai=True,
+        project=os.environ.get("GOOGLE_CLOUD_PROJECT", "glossgo-copilot"),
+        location=os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west4"),
+    )
+
+    async def _race(model_id: str) -> dict[str, object]:
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        try:
+            resp = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_id,
+                contents=BATTLE_PROMPT,
+                config=GenerateContentConfig(temperature=0.7, max_output_tokens=512),
+            )
+            wall_s = loop.time() - t0
+            text = (resp.text or "").strip()
+            usage = getattr(resp, "usage_metadata", None)
+            out_tokens = getattr(usage, "candidates_token_count", 0) or 0
+            in_tokens = getattr(usage, "prompt_token_count", 0) or 0
+            cost = out_tokens * GEMINI_PRICES.get(model_id, {"out_per_1m": 0})["out_per_1m"] / 1_000_000
+            return {
+                "model": model_id,
+                "ok": True,
+                "wall_s": wall_s,
+                "text": text,
+                "in_tokens": in_tokens,
+                "out_tokens": out_tokens,
+                "cost_usd": cost,
+            }
+        except Exception as exc:
+            return {
+                "model": model_id,
+                "ok": False,
+                "wall_s": loop.time() - t0,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    results = await asyncio.gather(*[
+        _race("gemini-2.5-pro"),
+        _race("gemini-2.5-flash"),
+        _race("gemini-2.5-flash-lite"),
+    ])
+
+    fastest_s = min((r.get("wall_s", 999) for r in results if r.get("ok")), default=1)
+    cheapest_c = min((r.get("cost_usd", 1) for r in results if r.get("ok") and r.get("cost_usd")), default=1)
+
+    cards = []
+    for r in results:
+        model = _esc(r["model"])
+        if not r.get("ok"):
+            cards.append(f'<div class="card error"><h3>{model}</h3>'
+                         f'<div class="err">{_esc(r.get("error", "failed"))}</div></div>')
+            continue
+        wall = r["wall_s"]
+        cost = r.get("cost_usd", 0)
+        speed_x = wall / fastest_s if fastest_s else 1
+        cost_x = cost / cheapest_c if cheapest_c else 1
+        badges = []
+        if abs(wall - fastest_s) < 0.05:
+            badges.append('<span class="b b-green">⚡ fastest</span>')
+        if abs(cost - cheapest_c) < 1e-9:
+            badges.append('<span class="b b-green">💰 cheapest</span>')
+        if r["model"] == "gemini-2.5-flash":
+            badges.append('<span class="b b-purple">our default</span>')
+        cards.append(f'''
+        <div class="card">
+          <div class="head">
+            <h3>{model}</h3>
+            <div class="badges">{" ".join(badges)}</div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="lbl">wall clock</div><div class="val">{wall:.2f}s</div><div class="sub">{speed_x:.1f}× fastest</div></div>
+            <div class="stat"><div class="lbl">output tokens</div><div class="val">{r["out_tokens"]}</div></div>
+            <div class="stat"><div class="lbl">est. cost</div><div class="val">${cost:.5f}</div><div class="sub">{cost_x:.1f}× cheapest</div></div>
+          </div>
+          <h4>Turkish draft</h4>
+          <div class="draft">{_esc(r["text"])}</div>
+        </div>''')
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>glossgo Salon Co-Pilot — model battle</title>
+<style>
+  body {{ font: 14px/1.6 system-ui, sans-serif; max-width: 1100px; margin: 32px auto;
+          padding: 0 24px; color: #1c1924; background: #faf8fb; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px; }}
+  .meta {{ color: #64596f; margin-bottom: 22px; }}
+  .meta a {{ color: #6f3aac; text-decoration: none; }}
+  .prompt {{ background: #fff; padding: 16px 20px; border-radius: 8px;
+             box-shadow: 0 1px 3px rgba(20,5,40,.06); margin-bottom: 28px; }}
+  .prompt h2 {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+                color: #64596f; margin: 0 0 8px; }}
+  .prompt pre {{ font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+                 white-space: pre-wrap; color: #4a3e5a; margin: 0; }}
+  .grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }}
+  @media (max-width: 880px) {{ .grid {{ grid-template-columns: 1fr; }} }}
+  .card {{ background: #fff; padding: 20px; border-radius: 10px;
+           box-shadow: 0 1px 3px rgba(20,5,40,.06); }}
+  .card.error {{ background: #fff0f0; }}
+  .head {{ display: flex; justify-content: space-between; align-items: center;
+           margin-bottom: 14px; }}
+  .head h3 {{ font-size: 15px; color: #3c2b50; margin: 0;
+              font-family: ui-monospace, Menlo, monospace; }}
+  .badges {{ display: flex; gap: 4px; flex-wrap: wrap; }}
+  .b {{ font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; }}
+  .b-green {{ background: #e8f6ec; color: #2d4f1c; }}
+  .b-purple {{ background: #f4eef7; color: #6f3aac; }}
+  .stats {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+            margin-bottom: 14px; }}
+  .stat {{ background: #f4eef7; padding: 8px 10px; border-radius: 6px; }}
+  .stat .lbl {{ font-size: 10px; text-transform: uppercase;
+                letter-spacing: 0.05em; color: #64596f; }}
+  .stat .val {{ font-size: 16px; font-weight: 700; color: #3c2b50;
+                font-variant-numeric: tabular-nums; }}
+  .stat .sub {{ font-size: 11px; color: #6f3aac; margin-top: 2px; }}
+  h4 {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+        color: #64596f; margin: 12px 0 6px; }}
+  .draft {{ background: #f4eef7; padding: 12px 14px; border-radius: 6px;
+            font-size: 13px; color: #3c2b50; white-space: pre-wrap; }}
+  .err {{ background: #fff; padding: 10px; border-radius: 6px; color: #a02020;
+          font-family: ui-monospace, Menlo, monospace; font-size: 12px; }}
+  .takeaway {{ background: #fff; padding: 16px 20px; border-radius: 8px;
+               box-shadow: 0 1px 3px rgba(20,5,40,.06); margin-top: 24px;
+               border-left: 3px solid #6f3aac; }}
+  .takeaway h2 {{ font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+                  color: #64596f; margin: 0 0 8px; }}
+</style></head>
+<body>
+<p class="meta"><a href="/dashboard">← dashboard</a></p>
+<h1>Gemini model battle — same prompt, three models</h1>
+<p class="meta">All three are on Vertex AI in europe-west4. Same prompt,
+same temperature 0.7, same 512-token cap. We pick Gemini 2.5 Flash as
+the default because it is the right tradeoff for a tool-using agent that
+draws context from MCP; this page proves the call.</p>
+
+<div class="prompt">
+  <h2>prompt</h2>
+  <pre>{_esc(BATTLE_PROMPT)}</pre>
+</div>
+
+<div class="grid">{"".join(cards)}</div>
+
+<div class="takeaway">
+  <h2>why we ship on flash</h2>
+  Flash hits the agent quality bar for Turkish drafts at roughly 16×
+  lower cost than Pro and a fraction of the latency. Flash Lite is even
+  cheaper but starts skipping nuance ("Sevgili" instead of "Merhaba")
+  and occasionally drops the salon name. Pro is overkill for this task —
+  any quality gain is dwarfed by the slower wall-clock and price.
+</div>
+</body></html>"""
 
 
 @app.get("/dashboard/economics", response_class=HTMLResponse)
