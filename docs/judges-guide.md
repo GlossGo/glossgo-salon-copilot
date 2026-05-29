@@ -85,6 +85,18 @@ The challenge's emphasis on ADK and MCP shaped the structure directly:
 
   ![dashboard](img/dashboard.png)
 
+  The dashboard is **deliberately bilingual**: each new agent action
+  carries a one-sentence English `decision_summary_en` rendered as a
+  green pill on top of the raw Turkish payload. An English-speaking
+  judge can verify what the agent decided without reading the Turkish
+  draft, while the actual customer-facing output stays Turkish —
+  glossgo is a Turkish beauty marketplace and the agents would speak
+  to Turkish customers in production. The decision pill is emitted
+  by each sub-agent's instruction and persisted in the
+  `agent_actions.payload` and `owner_approval_queue.payload` JSONB
+  fields, so the bilingual surface is part of the data contract,
+  not just dashboard chrome.
+
 - **Observability at `/dashboard/stats`** — read-only rollups over the
   same `copilot.*` tables, no JS, no charting library. KPIs (actions / 24h,
   / 7d, total, mean time to approval) and four bar-chart panels (by kind,
