@@ -265,6 +265,21 @@ async def dashboard(request: Request) -> str:
          "status": "eq.pending",
          "order": "created_at.desc", "limit": "25"},
     )
+    traces = await _supabase_get(
+        "agent_traces",
+        {"select": "session_id,created_at",
+         "order": "created_at.desc", "limit": "100"},
+    )
+    # dedupe by session_id, keep newest 5
+    seen: set[str] = set()
+    trace_sessions: list[dict[str, object]] = []
+    for t in traces:
+        sid = str(t.get("session_id", ""))
+        if sid and sid not in seen:
+            seen.add(sid)
+            trace_sessions.append(t)
+        if len(trace_sessions) >= 5:
+            break
 
     def _payload_cell(p: object) -> str:
         """Render payload with a 1-line EN decision summary on top (if present)
@@ -366,6 +381,19 @@ Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue<
 <h2>Recent agent actions</h2>
 <table><thead><tr><th>when</th><th>kind</th><th>mode</th><th>payload</th></tr></thead>
 <tbody>{actions_rows}</tbody></table>
+
+<h2>Recent reasoning traces (white-box)</h2>
+<table><thead><tr><th>when</th><th>session</th><th></th></tr></thead>
+<tbody>{
+  "".join(
+    _row_html([
+      _ts(s.get("created_at")),
+      f'<code>{_esc(str(s.get("session_id"))[:24])}</code>',
+      f'<a href="/dashboard/trace/{_esc(s.get("session_id"))}">view trace →</a>',
+    ])
+    for s in trace_sessions
+  ) or _row_html(["—", "<i>trigger a demo to see reasoning traces</i>", ""])
+}</tbody></table>
 </body></html>"""
 
 
@@ -434,6 +462,125 @@ async def dashboard_demo(request: Request) -> "Response":  # noqa: F821
         print(f"[dashboard.demo] {len(failed)}/{len(DEMO_EVENTS)} failed: {failed}", flush=True)
 
     return RedirectResponse(url="/dashboard?ran=demo", status_code=303)
+
+
+@app.get("/dashboard/trace/{session_id}", response_class=HTMLResponse)
+async def dashboard_trace(session_id: str, request: Request) -> str:
+    """White-box agent reasoning trace.
+
+    Renders the chronological event stream the orchestrator captured during
+    a /event run — routing, tool calls, tool responses, the agent's drafts,
+    and the final action. Auth: same cookie/bearer gate as /dashboard.
+    """
+    _require_dashboard_session(request)
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", session_id) or len(session_id) > 64:
+        raise HTTPException(status_code=400, detail="invalid session id")
+
+    traces = await _supabase_get(
+        "agent_traces",
+        {"select": "seq,event_type,agent_name,content,created_at",
+         "session_id": f"eq.{session_id}",
+         "order": "seq.asc", "limit": "100"},
+    )
+
+    if not traces:
+        return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>trace {session_id}</title>
+<style>body{{font:14px/1.5 system-ui;max-width:760px;margin:60px auto;padding:0 24px;color:#1c1924}}
+a{{color:#6f3aac}}</style></head>
+<body><a href="/dashboard">← dashboard</a>
+<h1>No trace found</h1>
+<p>Session <code>{_esc(session_id)}</code> has no captured events yet.
+Trigger a fresh demo from <a href="/dashboard">/dashboard</a> and the
+trace will land here.</p></body></html>"""
+
+    def _ms(rows: list[dict[str, object]], i: int) -> str:
+        if i == 0:
+            return ""
+        try:
+            t0 = dt.datetime.fromisoformat(str(rows[0]["created_at"]).replace("Z", "+00:00"))
+            ti = dt.datetime.fromisoformat(str(rows[i]["created_at"]).replace("Z", "+00:00"))
+            return f"+{(ti - t0).total_seconds():.1f}s"
+        except Exception:
+            return ""
+
+    def _render_content(c: object) -> str:
+        if not isinstance(c, dict):
+            return ""
+        parts = c.get("parts") or []
+        if not isinstance(parts, list):
+            return ""
+        blocks = []
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            if p.get("function_call"):
+                fc = p["function_call"]
+                name = _esc(fc.get("name", "?"))
+                args = _esc(json.dumps(fc.get("args", {}), ensure_ascii=False, indent=2))
+                blocks.append(f'<div class="call">→ tool <b>{name}</b><pre>{args}</pre></div>')
+            elif p.get("function_response"):
+                fr = p["function_response"]
+                name = _esc(fr.get("name", "?"))
+                resp = fr.get("response", {})
+                preview = json.dumps(resp, ensure_ascii=False)[:400]
+                blocks.append(f'<div class="resp">← <b>{name}</b> returned <pre>{_esc(preview)}</pre></div>')
+            elif p.get("text"):
+                t = str(p["text"])
+                blocks.append(f'<div class="text">{_esc(t[:600])}</div>')
+        return "\n".join(blocks)
+
+    badge = {
+        "tool_call": ('#fff7e0', '#7a5b00', 'tool call'),
+        "tool_response": ('#e5f1fb', '#0d3d6f', 'tool response'),
+        "final": ('#e8f6ec', '#1c553d', 'final'),
+        "step": ('#f4eef7', '#3c2b50', 'step'),
+    }
+
+    rows_html = []
+    for i, t in enumerate(traces):
+        bg, fg, label = badge.get(str(t.get("event_type", "step")), badge["step"])
+        rows_html.append(f'''
+        <div class="row">
+          <div class="meta">
+            <span class="badge" style="background:{bg};color:{fg}">{label}</span>
+            <span class="agent">{_esc(t.get("agent_name") or "—")}</span>
+            <span class="dt">{_ms(traces, i)}</span>
+          </div>
+          {_render_content(t.get("content"))}
+        </div>''')
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Trace · {session_id}</title>
+<style>
+  body {{ font: 14px/1.55 system-ui, sans-serif; max-width: 920px; margin: 32px auto;
+          padding: 0 24px; color: #1c1924; background: #faf8fb; }}
+  h1 {{ font-size: 20px; margin: 0 0 6px; }}
+  .meta-top {{ color: #64596f; margin-bottom: 22px; }}
+  .meta-top a {{ color: #6f3aac; text-decoration: none; }}
+  .row {{ background: #fff; border-radius: 8px; padding: 12px 16px;
+           margin-bottom: 10px; box-shadow: 0 1px 3px rgba(20,5,40,.05);
+           border-left: 3px solid #ece4f1; }}
+  .meta {{ display: flex; gap: 12px; align-items: center; margin-bottom: 8px;
+           font-size: 12px; }}
+  .badge {{ padding: 2px 8px; border-radius: 4px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }}
+  .agent {{ color: #3c2b50; font-weight: 600; }}
+  .dt {{ color: #64596f; font-variant-numeric: tabular-nums; margin-left: auto; }}
+  .call, .resp, .text {{ font-size: 13px; margin: 4px 0; }}
+  .call b, .resp b {{ color: #3c2b50; }}
+  pre {{ background: #f4eef7; padding: 8px 10px; border-radius: 4px;
+         font: 12px/1.4 ui-monospace, Menlo, monospace; overflow-x: auto;
+         margin: 4px 0 0; max-height: 160px; color: #3c2b50; }}
+  .text {{ white-space: pre-wrap; color: #4a3e5a; }}
+</style></head>
+<body>
+<p class="meta-top"><a href="/dashboard">← dashboard</a>  ·  session
+<code>{_esc(session_id)}</code>  ·  {len(traces)} events captured</p>
+<h1>Agent reasoning trace</h1>
+{"".join(rows_html)}
+</body></html>"""
 
 
 @app.get("/dashboard/stats", response_class=HTMLResponse)
@@ -658,6 +805,27 @@ async def handle_event(
     )
 
     final_text: list[str] = []
+    trace_rows: list[dict[str, object]] = []
+    seq = 0
+
+    def _serialize_part(part: object) -> dict[str, object]:
+        out: dict[str, object] = {}
+        if getattr(part, "text", None):
+            out["text"] = part.text
+        fc = getattr(part, "function_call", None)
+        if fc:
+            out["function_call"] = {
+                "name": getattr(fc, "name", None),
+                "args": dict(getattr(fc, "args", {}) or {}),
+            }
+        fr = getattr(part, "function_response", None)
+        if fr:
+            out["function_response"] = {
+                "name": getattr(fr, "name", None),
+                "response": getattr(fr, "response", None),
+            }
+        return out
+
     async for event in _runner.run_async(
         user_id=user_id,
         session_id=session.id,
@@ -666,15 +834,57 @@ async def handle_event(
             parts=[genai_types.Part.from_text(text=user_message)],
         ),
     ):
+        # Capture each event for the /dashboard/trace/{session_id} page.
+        try:
+            parts = []
+            if event.content and event.content.parts:
+                parts = [_serialize_part(p) for p in event.content.parts]
+            evt_type = "final" if event.is_final_response() else "step"
+            if parts and any("function_call" in p for p in parts):
+                evt_type = "tool_call"
+            elif parts and any("function_response" in p for p in parts):
+                evt_type = "tool_response"
+            trace_rows.append({
+                "session_id": session.id,
+                "business_id": str(business_id),
+                "event_type": evt_type,
+                "agent_name": getattr(event, "author", None),
+                "content": {"parts": parts, "role": getattr(event.content, "role", None) if event.content else None},
+                "seq": seq,
+            })
+            seq += 1
+        except Exception as exc:
+            print(f"[trace] capture failed: {type(exc).__name__}: {exc}", flush=True)
+
         if event.is_final_response() and event.content and event.content.parts:
             for part in event.content.parts:
                 if part.text:
                     final_text.append(part.text)
 
+    # Best-effort persistence; don't fail /event if Supabase is slow.
+    if trace_rows and SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(
+                    f"{SUPABASE_URL}/rest/v1/agent_traces",
+                    json=trace_rows,
+                    headers={
+                        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                        "Accept-Profile": "copilot",
+                        "Content-Profile": "copilot",
+                        "Content-Type": "application/json",
+                        "Prefer": "return=minimal",
+                    },
+                )
+        except Exception as exc:
+            print(f"[trace] persist failed: {type(exc).__name__}: {exc}", flush=True)
+
     return {
         "session_id": session.id,
         "event_type": event_type,
         "agent_response": "\n".join(final_text).strip(),
+        "trace_url": f"/dashboard/trace/{session.id}",
     }
 
 
