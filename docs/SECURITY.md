@@ -113,6 +113,30 @@ A compromised bearer can burst events.
 an `agent_actions` count over the trailing 60s; the orchestrator drops
 on-rate-limit events and writes them to a deferred queue.
 
+### Gap 6 — Dashboard auth is a single shared bearer
+
+`/dashboard` and `/dashboard/{id}/approve` accept either
+`Authorization: Bearer <COPILOT_DASHBOARD_TOKEN>` or `?token=<…>`.
+Today that token defaults to `COPILOT_WEBHOOK_BEARER` (one
+deployment-wide secret). Any holder of the token sees every tenant's
+queue and can approve any row.
+
+Production replacement (Day 6-7): require a per-owner signed session
+cookie issued by `auth.glossgo.com`. The dashboard route resolves the
+caller's `business_id` from the cookie and:
+  1. Filters every Supabase read by that `business_id`.
+  2. On approve, SELECT-then-PATCH and refuse if
+     `row.business_id != caller.business_id`.
+  3. Add a CSRF token to the approval form, verified server-side.
+
+Today's mitigations until that ships:
+- Token is a 32-byte random secret in Secret Manager (`copilot-webhook-bearer`),
+  same crypto strength as the event-webhook gate.
+- Approve handler re-SELECTs the row with `status=pending` filter before
+  PATCHing; a stale or already-acted approval returns 404 not silent success.
+- Approval-id format is hex-UUID; brute-forcing without the token is
+  effectively a `2^128` search.
+
 ### Gap 5 — OIDC ID token TTL vs. instance lifetime
 
 `_fetch_id_token` is called at agent-build time (orchestrator process
