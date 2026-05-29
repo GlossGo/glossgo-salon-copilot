@@ -165,3 +165,46 @@ literal close-delimiter the attacker tried to inject.
 - OIDC MCP audience debug + re-lock MCPs to `--no-allow-unauthenticated`.
   Day 6.
 - Demo video + architecture PNG + Devpost write-up polish. Day 6–7.
+
+## Day 5 — 2026-05-29 (continued, +5h) — one-click demo + diagrams
+
+**Architecture diagram.** `docs/architecture.mmd` rendered to PNG (264 KB,
+2400 px, transparent) and SVG (66 KB) via `mmdc`. Embedded in the README
+and the judges-guide.
+
+**Dashboard demo trigger.** Added `POST /dashboard/demo` behind the same
+cookie + CSRF gate as `/approve`. It fires all three pre-seeded events
+(`booking.cancelled`, `review.created`, `calendar.weekly_review`) into the
+orchestrator concurrently via `asyncio.gather`, returns 303 to
+`/dashboard?ran=demo`. Wall clock ~22 s for the full fan-out on the public
+Cloud Run URL. After the demo the dashboard shows 4 pending approvals
+(3 review drafts + 1 campaign) and 6 shadow-mode `send_whatsapp` rows. A
+green "Demo run complete" banner confirms the click.
+
+**Verification.** 5 / 5 green:
+
+| # | Expected | Got |
+|---|---|---|
+| dashboard renders the "Trigger demo" button | yes | yes (button + caption + form) |
+| POST /dashboard/demo without CSRF | 403 | 403 |
+| POST /dashboard/demo with CSRF | 303 → /dashboard?ran=demo | 303, 22 s wall clock |
+| post-demo dashboard shows new rows | ≥3 approvals + ≥3 actions | 4 approvals + 6 actions |
+| post-demo banner | shown | "Demo run complete" green banner |
+
+**Judges-guide.** `docs/judges-guide.md` rewritten with:
+- Live URLs (orchestrator + dashboard login).
+- Architecture + dashboard PNGs embedded.
+- The actual measured numbers per agent (28 s no-show, 17 s 2★ review,
+  12 s 5★ review, 4 s empty-calendar refusal).
+- A 4-curl quickstart that exercises /ready + the 3 event types under
+  60 s total.
+- An honest "Challenges we ran into" list — 10 real bugs and their fix
+  commits, in the order we hit them.
+
+**Cumulative state of the system.**
+- Multi-agent system fully operational on public Cloud Run URL.
+- Cookie-session + CSRF dashboard with one-click multi-agent demo.
+- Three sub-agents tested green on Vertex AI Gemini 2.5 Flash.
+- 6 SECURITY.md gaps with explicit Day 6 / Day 7 fix plans for each
+  open one.
+- 13 commits, all push'd to main, none with AI attribution.
