@@ -107,6 +107,29 @@ The challenge's emphasis on ADK and MCP shaped the structure directly:
 
   ![trace](img/trace.png)
 
+- **Live model battle at `/dashboard/battle`** — Gemini 2.5 Pro vs
+  Flash vs Flash Lite, same prompt, same temperature, same token cap,
+  asyncio.gather'd in parallel. Each model gets a card with wall
+  clock, output tokens, projected USD cost, the Turkish draft, and
+  "fastest" / "cheapest" / "our default" badges. Live runs we've
+  recorded come in around: Pro ~6.1 s / $0.00010, Flash ~3.9 s /
+  $0.000010 (16× cheaper than Pro), Flash Lite ~0.9 s / $0.000006
+  (faster but starts dropping nuance — emits "Sevgili" instead of
+  "Merhaba" and occasionally skips the salon name). Makes the "why
+  Flash" choice auditable.
+
+  ![battle](img/battle.png)
+
+- **Marketplace economics at `/dashboard/economics`** — five sliders,
+  three KPI groups (recovered revenue, ARR to glossgo at the take rate,
+  per-salon LTV) plus two pricing-tier tables (Pro ₺199 and Business
+  ₺499). Defaults match glossgo's actual operating numbers (9,826
+  active salons, ₺250 average revenue per recovered slot, 12 daily
+  agent actions per Pro-tier salon). The business case turns from
+  prose into a live calculator a judge can drag.
+
+  ![economics](img/economics.png)
+
 - **Observability at `/dashboard/stats`** — read-only rollups over the
   same `copilot.*` tables, no JS, no charting library. KPIs (actions / 24h,
   / 7d, total, mean time to approval) and four bar-chart panels (by kind,
