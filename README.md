@@ -81,6 +81,17 @@ curl -X POST localhost:8080/event \
   -d '{"type":"booking.cancelled","booking_id":"demo-bk-001"}'
 ```
 
+## Cloud deploy
+
+```bash
+./scripts/deploy-cloudrun.sh    # uses PROJECT=glossgo-copilot, REGION=europe-west4
+```
+
+Full deploy walkthrough (one-time prerequisites + redeploy loop):
+[`docs/deploy.md`](docs/deploy.md). Trust model + auth controls:
+[`docs/SECURITY.md`](docs/SECURITY.md). Architecture diagram source:
+[`docs/architecture.mmd`](docs/architecture.mmd).
+
 ## Status
 
 Active development. See [`docs/sprint-log.md`](docs/sprint-log.md) for daily progress.
