@@ -25,26 +25,18 @@ When something happens at a salon (a customer cancels, a Google review drops, th
 
 ## Architecture
 
-```
-Cloudflare Worker (existing glossgo-be)
-        |
-        | event (booking.cancelled, review.created, ...)
-        v
-   Pub/Sub topic: copilot-events
-        |
-        v
-   Orchestrator Agent (Cloud Run, Gemini 2.5 Pro)
-        |
-        +--routes-to--> No-Show Recovery (Gemini Flash)
-        |                    |
-        |                    +--uses--> mcp-data (Supabase read)
-        |                    +--uses--> mcp-comms (WhatsApp send)
-        |                    +--uses--> mcp-calendar (booking write)
-        |
-        +--routes-to--> Review Responder (Gemini Flash)
-        |
-        +--routes-to--> Calendar Optimizer (Gemini Flash)
-```
+![architecture](docs/img/architecture.png)
+
+Source: [`docs/architecture.mmd`](docs/architecture.mmd). Re-render with
+`npx -p @mermaid-js/mermaid-cli mmdc -i docs/architecture.mmd -o docs/img/architecture.png -b transparent -w 2400 -t neutral`.
+
+The diagram shows the target architecture. Today's deployment matches it
+except for one temporary relaxation called out in
+[`docs/SECURITY.md`](docs/SECURITY.md) Gap 1: MCP services run with
+`--ingress=all` and `allUsers` as `run.invoker` while the OIDC audience
+validation is debugged. The container-level static bearer
+(`MCP_BEARER_TOKEN`) is the actual auth gate today; Day 6 swaps it for
+Cloud Run signed identity + re-locks the ingress.
 
 ## Repo layout
 
