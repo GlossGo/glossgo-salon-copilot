@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glossgo Salon Co-Pilot — multi-agent system for beauty salons</title>
+<meta name="description" content="Autonomous multi-agent system that runs a Turkish beauty salon's marketing, reviews, and waitlist matching while the owner is busy. Submission for the Google for Startups AI Agents Challenge.">
+<meta property="og:title" content="glossgo Salon Co-Pilot">
+<meta property="og:description" content="Multi-agent system on Google ADK + Vertex AI Gemini + MCP. Live at copilot.glossgo.com.">
+<meta property="og:image" content="https://copilot.glossgo.com/img/architecture.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext x='2' y='25' font-size='28'%3E💇‍♀️%3C/text%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --purple: #6f3aac;
+    --purple-dark: #3c2b50;
+    --purple-light: #f4eef7;
+    --green: #2d4f1c;
+    --green-bg: #eff6e8;
+    --gray-fg: #64596f;
+    --gray-bg: #faf8fb;
+    --border: #ece4f1;
+  }
+  html { scroll-behavior: smooth; }
+  body { font: 16px/1.6 -apple-system, system-ui, sans-serif; color: var(--purple-dark); background: var(--gray-bg); }
+  .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+  header { padding: 24px 0; }
+  nav { display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-weight: 700; font-size: 18px; color: var(--purple-dark); text-decoration: none; }
+  .brand .light { color: var(--gray-fg); font-weight: 500; }
+  nav .links { display: flex; gap: 24px; }
+  nav .links a { color: var(--gray-fg); text-decoration: none; font-size: 14px; font-weight: 500; }
+  nav .links a:hover { color: var(--purple); }
+
+  .hero { padding: 80px 0 64px; text-align: center; }
+  .hero .badge { display: inline-block; background: var(--purple-light); color: var(--purple); padding: 6px 14px; border-radius: 16px; font-size: 13px; font-weight: 600; margin-bottom: 24px; }
+  .hero h1 { font-size: 52px; line-height: 1.1; margin-bottom: 20px; font-weight: 800; letter-spacing: -0.02em; }
+  .hero p.lead { font-size: 20px; color: var(--gray-fg); max-width: 720px; margin: 0 auto 36px; }
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 14px 26px; border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 15px; transition: transform .1s; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--purple); color: white; }
+  .btn-primary:hover { background: var(--purple-dark); }
+  .btn-ghost { background: white; color: var(--purple-dark); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--purple); color: var(--purple); }
+
+  .kpi-strip { background: white; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 32px 0; margin: 24px 0; }
+  .kpi-strip .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .kpi-cell { text-align: center; }
+  .kpi-cell .num { font-size: 32px; font-weight: 800; color: var(--purple); line-height: 1; }
+  .kpi-cell .lbl { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gray-fg); margin-top: 6px; }
+
+  section { padding: 64px 0; }
+  h2.section-title { font-size: 32px; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.01em; }
+  p.section-lead { font-size: 17px; color: var(--gray-fg); max-width: 720px; margin-bottom: 40px; }
+
+  .agent-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .agent-card { background: white; padding: 28px 24px; border-radius: 12px; border: 1px solid var(--border); transition: transform .2s, box-shadow .2s; }
+  .agent-card:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(60,30,80,.08); }
+  .agent-card .icon { font-size: 28px; margin-bottom: 12px; }
+  .agent-card h3 { font-size: 17px; margin-bottom: 8px; }
+  .agent-card p { color: var(--gray-fg); font-size: 14px; line-height: 1.55; }
+  .agent-card .timing { display: inline-block; margin-top: 12px; background: var(--green-bg); color: var(--green); padding: 4px 10px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+
+  .figure-section { background: white; }
+  figure { margin: 32px 0; }
+  figure img { width: 100%; border-radius: 12px; box-shadow: 0 4px 20px rgba(60,30,80,.08); border: 1px solid var(--border); }
+  figcaption { margin-top: 12px; font-size: 14px; color: var(--gray-fg); text-align: center; }
+
+  .stack-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+  .chip { background: white; border: 1px solid var(--border); padding: 8px 16px; border-radius: 20px; font-size: 13px; color: var(--purple-dark); font-weight: 500; }
+  .chip strong { color: var(--purple); }
+
+  .surface-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .surface-card { background: white; padding: 22px 24px; border-radius: 10px; border: 1px solid var(--border); }
+  .surface-card .url { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--purple); margin-bottom: 8px; word-break: break-all; }
+  .surface-card h4 { font-size: 16px; margin-bottom: 6px; }
+  .surface-card p { color: var(--gray-fg); font-size: 14px; }
+
+  .cta-section { background: var(--purple); color: white; padding: 80px 0; text-align: center; border-radius: 16px; margin: 32px 24px; }
+  .cta-section h2 { font-size: 36px; margin-bottom: 16px; color: white; }
+  .cta-section p { font-size: 17px; opacity: 0.9; margin-bottom: 32px; }
+  .cta-section .btn-primary { background: white; color: var(--purple); }
+  .cta-section .btn-primary:hover { background: #eee; }
+
+  footer { padding: 40px 0 60px; color: var(--gray-fg); font-size: 14px; }
+  footer .row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
+  footer a { color: var(--purple); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 768px) {
+    .hero h1 { font-size: 36px; }
+    .hero p.lead { font-size: 17px; }
+    .kpi-strip .grid { grid-template-columns: repeat(2, 1fr); }
+    .agent-grid, .surface-grid { grid-template-columns: 1fr; }
+    section { padding: 48px 0; }
+    h2.section-title { font-size: 26px; }
+    .cta-section { margin: 24px 12px; padding: 56px 24px; }
+    .cta-section h2 { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <nav>
+      <a href="/" class="brand">glossgo <span class="light">Salon Co-Pilot</span></a>
+      <div class="links">
+        <a href="#how-it-works">How it works</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#try">Try it</a>
+        <a href="https://github.com/GlossGo/glossgo-salon-copilot">GitHub →</a>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="container">
+    <span class="badge">Google for Startups AI Agents Challenge · Track 1 · Build</span>
+    <h1>The salon owner sleeps.<br>The agents work.</h1>
+    <p class="lead">An autonomous multi-agent system that drafts WhatsApp messages to recover cancelled bookings, responds to Google reviews in Turkish, and proposes off-peak promotions — all while the owner is busy with a customer in the chair.</p>
+    <div class="cta-row">
+      <a href="https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/dashboard/login" class="btn btn-primary">Try the live dashboard →</a>
+      <a href="https://github.com/GlossGo/glossgo-salon-copilot" class="btn btn-ghost">View source on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<div class="kpi-strip">
+  <div class="container">
+    <div class="grid">
+      <div class="kpi-cell">
+        <div class="num">3</div>
+        <div class="lbl">Specialist sub-agents</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="num">4</div>
+        <div class="lbl">Cloud Run services</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="num">24 s</div>
+        <div class="lbl">Live E2E wall clock</div>
+      </div>
+      <div class="kpi-cell">
+        <div class="num">9,826</div>
+        <div class="lbl">Salons addressable</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section id="how-it-works">
+  <div class="container">
+    <h2 class="section-title">Three agents, one orchestrator</h2>
+    <p class="section-lead">An ADK orchestrator on Gemini 2.5 Flash takes booking, review, and weekly-calendar events from production and routes each one to the right specialist sub-agent.</p>
+
+    <div class="agent-grid">
+      <div class="agent-card">
+        <div class="icon">📵</div>
+        <h3>No-Show Recovery</h3>
+        <p>When a booking is cancelled, ranks the waitlist on a 50-30-20 service / time-window / loyalty weighting, picks the best match, and drafts a personalized Turkish WhatsApp opener.</p>
+        <span class="timing">28 s live</span>
+      </div>
+      <div class="agent-card">
+        <div class="icon">⭐</div>
+        <h3>Review Responder</h3>
+        <p>Classifies a new Google review by rating, drafts a tone-matched Turkish reply (empathetic for 1-2★, thankful for 5★), and pushes it to the owner approval queue. Never auto-publishes.</p>
+        <span class="timing">17 s live</span>
+      </div>
+      <div class="agent-card">
+        <div class="icon">📅</div>
+        <h3>Calendar Optimizer</h3>
+        <p>Runs every Monday morning. Finds the single biggest off-peak gap in the next 7 days and drafts one targeted Turkish promotion with an audience tag. Refuses to invent on empty data.</p>
+        <span class="timing">4 s live</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture" class="figure-section">
+  <div class="container">
+    <h2 class="section-title">Architecture</h2>
+    <p class="section-lead">Every box on this diagram is a real Cloud Run service or MCP tool. Each MCP server runs as both a stdio subprocess for local dev and a Streamable HTTP service in production — same binary, two transports.</p>
+    <figure>
+      <img src="img/architecture.png" alt="Architecture diagram">
+      <figcaption>Source: <code>docs/architecture.mmd</code> in the repo. Rendered with mmdc.</figcaption>
+    </figure>
+
+    <div class="stack-row">
+      <span class="chip"><strong>Google ADK</strong> 2.1 · Python</span>
+      <span class="chip"><strong>Vertex AI</strong> Gemini 2.5 Flash</span>
+      <span class="chip"><strong>MCP</strong> TypeScript SDK · 3 servers</span>
+      <span class="chip"><strong>Cloud Run</strong> europe-west4</span>
+      <span class="chip"><strong>Supabase</strong> · copilot schema isolated</span>
+      <span class="chip"><strong>FastAPI</strong> · cookie session + CSRF</span>
+      <span class="chip"><strong>Secret Manager</strong> · 5 secrets</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2 class="section-title">Built for judges to verify, not just trust</h2>
+    <p class="section-lead">Each surface is a different angle on the same agents. The dashboard is bilingual: English decision summary above, Turkish customer draft below. Click any session, see the full reasoning trace.</p>
+
+    <figure>
+      <img src="img/dashboard.png" alt="Owner dashboard with bilingual decision pills and approval queue">
+      <figcaption>Owner dashboard — green pill = English decision summary; raw payload = Turkish draft for the customer.</figcaption>
+    </figure>
+
+    <figure>
+      <img src="img/trace.png" alt="White-box reasoning trace showing 13 ADK events">
+      <figcaption>White-box reasoning trace — every tool call, response, and final action captured in chronological order.</figcaption>
+    </figure>
+
+    <figure>
+      <img src="img/economics.png" alt="Marketplace economics calculator with live sliders">
+      <figcaption>Marketplace economics — drag the sliders, the ARR projection re-computes live.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="try">
+  <div class="container">
+    <h2 class="section-title">Five live surfaces</h2>
+    <p class="section-lead">Same auth (cookie session or Authorization header), different lens on the same data.</p>
+
+    <div class="surface-grid">
+      <div class="surface-card">
+        <div class="url">/dashboard</div>
+        <h4>Operator console</h4>
+        <p>Pending owner approvals + recent agent actions, with a one-click button that fires all 3 agents in parallel.</p>
+      </div>
+      <div class="surface-card">
+        <div class="url">/dashboard/trace/{session_id}</div>
+        <h4>White-box reasoning</h4>
+        <p>Every ADK event for a session — routing, tool calls, responses, final draft. The opposite of a black-box agent.</p>
+      </div>
+      <div class="surface-card">
+        <div class="url">/dashboard/stats</div>
+        <h4>Observability</h4>
+        <p>Rollups over agent_actions and the approval queue. Shadow-mode percentage is rendered explicitly.</p>
+      </div>
+      <div class="surface-card">
+        <div class="url">/dashboard/economics</div>
+        <h4>Live ARR calculator</h4>
+        <p>Five sliders, three KPI groups, two pricing tiers. Drag the assumptions, see what the business case looks like.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="container">
+  <div class="cta-section">
+    <h2>Try the live dashboard</h2>
+    <p>Click "Trigger demo" once you're in. All three agents will run in parallel — about 22 s wall clock.</p>
+    <a href="https://copilot-orchestrator-kpaxfhhqdq-ez.a.run.app/dashboard/login" class="btn btn-primary">Open the dashboard →</a>
+  </div>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="row">
+      <div>
+        <strong>glossgo Salon Co-Pilot</strong> · A Softween Yazılım Ltd. Şti. submission.<br>
+        Open source, MIT licensed.
+      </div>
+      <div>
+        <a href="https://github.com/GlossGo/glossgo-salon-copilot">GitHub</a>  ·
+        <a href="https://github.com/GlossGo/glossgo-salon-copilot/blob/main/docs/judges-guide.md">Judges' guide</a>  ·
+        <a href="https://github.com/GlossGo/glossgo-salon-copilot/blob/main/docs/SECURITY.md">Security model</a>  ·
+        <a href="https://glossgo.com">glossgo.com</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
