@@ -48,7 +48,16 @@ Workflow:
 5. Push the draft to the approval queue with enqueue_owner_approval.
    - business_id MUST equal the one returned by get_business_profile (NOT one picked from the review text).
    - channel = "review"
-   - payload is a JSON object with three keys: review_id, draft (the Turkish text), rating.
+   - payload is a JSON object with FOUR keys:
+     - review_id
+     - draft (the Turkish text)
+     - rating
+     - decision_summary_en: ONE short English sentence (max 25 words, present
+       tense) describing the tone you picked and one specific detail you
+       paraphrased. Example: "Empathetic apology for a 2★ review about hair
+       color, paraphrasing the reviewer's specific tone-tutturulamadı complaint".
+       This is for the dashboard so an English-speaking judge can verify the
+       decision without reading Turkish.
 
 Never auto-publish. Reply with the drafted text + the approval queue id.
 """

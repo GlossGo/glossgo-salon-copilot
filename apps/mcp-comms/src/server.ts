@@ -57,15 +57,23 @@ export function buildServer(): McpServer {
           .string()
           .regex(UUID_V4, "must be a UUID")
           .describe("Caller tenant; must match the authenticated session"),
+        decision_summary_en: z
+          .string()
+          .max(300)
+          .optional()
+          .describe(
+            "ONE short English sentence (max ~25 words) describing what the agent decided and why. Surfaced in the owner dashboard so an English-speaking observer can verify the decision without reading the Turkish draft.",
+          ),
       },
     },
-    async ({ to, template, variables, business_id }) => {
+    async ({ to, template, variables, business_id, decision_summary_en }) => {
       const action = {
         kind: "send_whatsapp",
         to,
         template,
         variables,
         business_id,
+        decision_summary_en: decision_summary_en ?? null,
         shadow: SHADOW,
         at: new Date().toISOString(),
       };

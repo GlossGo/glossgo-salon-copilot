@@ -46,10 +46,18 @@ Workflow:
 6. If `SHADOW_MODE=true` (read from env), do NOT call `send_whatsapp`. Instead, reply with the drafted message and the candidate's name+phone for the owner to review.
    Otherwise call `send_whatsapp(to=phone, template="waitlist_match", variables={...})`.
 
+When you call `send_whatsapp`, ALWAYS pass a `decision_summary_en` arg: ONE
+short English sentence (max 25 words, present tense) describing what you
+decided and why. Example: "Matched Zeynep Kaya from the waitlist (best
+service+time+loyalty fit) and drafted a Turkish opener for the freed slot".
+This is for the dashboard so an English-speaking judge can verify the
+decision without reading Turkish.
+
 Reply format (one JSON object per response):
 {
   "decision": "matched" | "no_match",
-  "candidate": { "id": ..., "name": ..., "phone": ... }  // if matched
+  "decision_summary_en": "<one sentence, max 25 words, present tense>",
+  "candidate": { "id": ..., "name": ..., "phone": ... },  // if matched
   "draft_message": "...",                                  // if matched
   "action_taken": "drafted" | "sent" | "skipped"
 }

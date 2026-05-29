@@ -266,12 +266,22 @@ async def dashboard(request: Request) -> str:
          "order": "created_at.desc", "limit": "25"},
     )
 
+    def _payload_cell(p: object) -> str:
+        """Render payload with a 1-line EN decision summary on top (if present)
+        and the raw payload preview below — bilingual proof for the judge."""
+        summary = ""
+        if isinstance(p, dict):
+            raw = p.get("decision_summary_en")
+            if isinstance(raw, str) and raw.strip():
+                summary = f'<div class="decision">{_esc(raw.strip())}</div>'
+        return summary + f'<div class="raw">{_esc(str(p)[:160])}</div>'
+
     actions_rows = "\n".join(
         _row_html([
             _ts(a.get("created_at")),
             _esc(a.get("kind")),
             "✓ shadow" if a.get("shadow") else "<b>LIVE</b>",
-            _esc(str(a.get("payload", ""))[:140]),
+            _payload_cell(a.get("payload", "")),
         ])
         for a in actions
     ) or _row_html(["—", "<i>no agent actions yet</i>", "", ""])
@@ -292,7 +302,7 @@ async def dashboard(request: Request) -> str:
         _row_html([
             _ts(q.get("created_at")),
             _esc(q.get("channel")),
-            _esc(str(q.get("payload", ""))[:200]),
+            _payload_cell(q.get("payload", "")),
             _approve_form(str(q.get("id", ""))),
         ])
         for q in queue
@@ -319,8 +329,12 @@ async def dashboard(request: Request) -> str:
             vertical-align: top; }}
   th {{ background: #f4eef7; font-weight: 600; color: #3c2b50; }}
   tr:last-child td {{ border-bottom: none; }}
-  td:nth-child(4) {{ font-family: ui-monospace, Menlo, monospace; font-size: 12px;
-                      color: #4a3e5a; }}
+  td:nth-child(4) {{ font-size: 13px; color: #4a3e5a; }}
+  .decision {{ font-weight: 600; color: #2d4f1c; background: #eff6e8;
+               padding: 4px 8px; border-radius: 4px; margin-bottom: 4px;
+               font-size: 12px; line-height: 1.35; }}
+  .raw {{ font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+          color: #6a5d7a; line-height: 1.4; }}
   form {{ margin: 0; display: inline; }}
   button {{ background: #6f3aac; color: #fff; border: none; padding: 4px 10px;
             border-radius: 4px; font: inherit; cursor: pointer; }}

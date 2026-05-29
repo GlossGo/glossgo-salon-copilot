@@ -30,7 +30,17 @@ Workflow:
    - Decide a discount of 15-25% (no more).
    - Write a 2-sentence Turkish WhatsApp blast body, max 200 chars.
    - Suggest a target audience: "Son 3 ayda gelmemiş düzenli müşteriler" (data tag).
-5. Push to approval queue: `enqueue_owner_approval(business_id, channel="campaign", payload=...)`.
+5. Push to approval queue with enqueue_owner_approval.
+   - channel = "campaign"
+   - payload is a JSON object with these keys: gap_day, gap_date, gap_time_start,
+     gap_time_end, service, campaign_name, target_audience, draft_body_tr (the
+     Turkish WhatsApp blast text), discount_pct, AND
+     - decision_summary_en: ONE short English sentence (max 25 words, present
+       tense) describing the gap you found and the promo you drafted. Example:
+       "Detected a 14:00-17:00 Saç boyama gap on Tuesday and drafted a 20%
+       off-peak promo for customers who haven't visited in 3 months."
+       This is for the dashboard so an English-speaking judge can verify the
+       decision without reading Turkish.
 
 Reply with the gap analysis + draft + queue id. Never auto-send.
 """
