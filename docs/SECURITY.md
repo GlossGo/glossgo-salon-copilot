@@ -46,25 +46,34 @@ known gaps with a plan for each.
 
 ### Gap 1 — Single shared MCP bearer = no per-tenant identity (IDOR risk)
 
-Today every MCP server accepts the same `MCP_BEARER_TOKEN`. Any caller with
-the bearer can read any tenant's data by passing the right `business_id`.
+Identity layer SHIPPED 2026-05-29 (Day 3); authorization layer (per-tenant
+claim) still pending.
 
-Why this is acceptable as of Day 1 — the only caller is the orchestrator,
-which itself is bearer-gated and runs server-side. There is no
-salon-facing path that talks to the MCP servers directly.
+**Shipped (Day 3).**
+- Each MCP service runs `--no-allow-unauthenticated` with
+  `--ingress=internal-and-cloud-load-balancing`.
+- Orchestrator runtime SA `copilot-runtime@glossgo-copilot.iam.gserviceaccount.com`
+  is IAM-bound as `roles/run.invoker` on `copilot-mcp-data`,
+  `copilot-mcp-comms`, `copilot-mcp-calendar`.
+- `_mcp.py` fetches a Google-signed OIDC ID token from the Cloud Run metadata
+  server (audience = the MCP service's URL, stripped of `/mcp`) and injects
+  it as the `Authorization: Bearer` header on the Streamable HTTP connection.
+  Cloud Run validates the signature upstream — the request only reaches the
+  container if the caller's identity has `run.invoker`.
+- The static `MCP_BEARER_TOKEN` remains as a fallback for local
+  `MCP_TRANSPORT=http` testing (no metadata server). On Cloud Run, the
+  metadata server is always present, so we always use OIDC there.
 
-**Day 2-3 fix**
+**Still pending — authorization layer.**
+The orchestrator's SA can invoke the MCPs. The MCPs cannot distinguish
+between "caller is the orchestrator on tenant A's event" vs "tenant B's
+event." For cross-tenant traversal we still rely on the orchestrator
+passing the correct `business_id` argument.
 
-1. Deploy each MCP server to Cloud Run with `--no-allow-unauthenticated` and
-   `--ingress=internal-and-cloud-load-balancing`.
-2. Have the orchestrator's Cloud Run runtime service account
-   (`copilot-orchestrator@glossgo-platform.iam.gserviceaccount.com`)
-   IAM-bound as `roles/run.invoker` on each MCP service.
-3. Drop the static bearer entirely; rely on Google-signed OIDC tokens that
-   Cloud Run validates upstream. Identity ≠ authorization, so also:
-4. Add a `glossgo-be`-signed JWT in a custom header carrying the verified
-   `business_id` claim. The MCP server checks the JWT signature and rejects
-   any tool call whose `business_id` argument doesn't match the claim.
+Next step (Day 4-5): add a `glossgo-be`-signed JWT in a custom header
+carrying the verified `business_id` claim. The MCP server checks the
+signature and rejects any tool call whose `business_id` argument doesn't
+match the claim.
 
 ### Gap 2 — Orchestrator trusts the bearer to attest tenant
 
@@ -83,6 +92,20 @@ A compromised bearer can burst events.
 **Day 6 fix** — per-tenant token bucket in `copilot.rate_limits`. Backed by
 an `agent_actions` count over the trailing 60s; the orchestrator drops
 on-rate-limit events and writes them to a deferred queue.
+
+### Gap 5 — OIDC ID token TTL vs. instance lifetime
+
+`_fetch_id_token` is called at agent-build time (orchestrator process
+startup). The token lives for ~1h. Cloud Run instances idle out long
+before that today (~15 min), so in practice every cold-started instance
+gets a fresh token. But a single instance held warm by traffic past the
+1h mark would start sending an expired token.
+
+**Day 4-5 fix.** Replace the static-headers approach with an httpx auth
+hook that re-fetches the ID token on 401 and on a 55-minute timer. ADK's
+`StreamableHTTPConnectionParams` doesn't expose a hook today; we'll either
+ship a thin patch upstream or wrap the connection-params construction
+with a custom toolset.
 
 ### Gap 4 — Prompt injection still possible via other untrusted fields
 

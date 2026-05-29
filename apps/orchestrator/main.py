@@ -4,7 +4,9 @@ Exposes two routes:
   POST /event    Body: {"type": "booking.cancelled", "business_id": "...", "booking_id": "..."}
                  -> runs the root agent on the event payload, returns the action log.
                  Requires `Authorization: Bearer <COPILOT_WEBHOOK_BEARER>` header.
-  GET  /healthz  Liveness probe (unauthenticated).
+  GET  /ready    Liveness probe (unauthenticated). Renamed from /healthz because
+                 Cloud Run's Google Frontend reserves /healthz and returns 404
+                 for external requests even when the container registers it.
 
 In production this endpoint is fronted by a Pub/Sub push subscription that
 forwards a Google-signed OIDC token; the bearer secret is a stopgap that
@@ -52,8 +54,8 @@ def _require_bearer(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-@app.get("/healthz")
-async def healthz() -> dict[str, str]:
+@app.get("/ready")
+async def ready() -> dict[str, str]:
     return {"status": "ok", "agent": root_agent.name}
 
 
