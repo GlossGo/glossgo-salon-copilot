@@ -332,7 +332,8 @@ async def dashboard(request: Request) -> str:
 <body>
 <h1>glossgo Salon Co-Pilot</h1>
 <p class="meta">Agent activity, read-only.
-Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue</code>.</p>
+Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue</code>.
+<a href="/dashboard/stats" style="color:#6f3aac">stats →</a></p>
 
 <div class="actions">
   <form method="post" action="/dashboard/demo">
@@ -419,6 +420,151 @@ async def dashboard_demo(request: Request) -> "Response":  # noqa: F821
         print(f"[dashboard.demo] {len(failed)}/{len(DEMO_EVENTS)} failed: {failed}", flush=True)
 
     return RedirectResponse(url="/dashboard?ran=demo", status_code=303)
+
+
+@app.get("/dashboard/stats", response_class=HTMLResponse)
+async def dashboard_stats(request: Request) -> str:
+    """Per-agent rollup of the last 200 actions + approval queue, rendered
+    as a single HTML table. Cookie session OR Authorization header, same
+    gate as /dashboard. No state-changing endpoints here, so no CSRF needed.
+    """
+    _require_dashboard_session(request)
+
+    actions = await _supabase_get(
+        "agent_actions",
+        {"select": "kind,shadow,created_at",
+         "order": "created_at.desc", "limit": "200"},
+    )
+    queue = await _supabase_get(
+        "owner_approval_queue",
+        {"select": "channel,status,created_at,acted_at",
+         "order": "created_at.desc", "limit": "200"},
+    )
+
+    now = dt.datetime.now(dt.UTC)
+    cutoff_24h = now - dt.timedelta(hours=24)
+    cutoff_7d = now - dt.timedelta(days=7)
+
+    def _at(row: dict[str, object]) -> dt.datetime | None:
+        raw = row.get("created_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            return dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    actions_24h = [a for a in actions if (t := _at(a)) and t >= cutoff_24h]
+    actions_7d = [a for a in actions if (t := _at(a)) and t >= cutoff_7d]
+
+    by_kind: dict[str, int] = {}
+    for a in actions:
+        by_kind[str(a.get("kind") or "(unknown)")] = by_kind.get(str(a.get("kind") or "(unknown)"), 0) + 1
+    shadow_count = sum(1 for a in actions if a.get("shadow"))
+    live_count = len(actions) - shadow_count
+
+    queue_by_status: dict[str, int] = {}
+    for q in queue:
+        queue_by_status[str(q.get("status") or "(unknown)")] = (
+            queue_by_status.get(str(q.get("status") or "(unknown)"), 0) + 1
+        )
+    queue_by_channel: dict[str, int] = {}
+    for q in queue:
+        queue_by_channel[str(q.get("channel") or "(unknown)")] = (
+            queue_by_channel.get(str(q.get("channel") or "(unknown)"), 0) + 1
+        )
+
+    # Mean time-to-approval over approved-with-acted-at rows
+    deltas_min: list[float] = []
+    for q in queue:
+        if q.get("status") != "approved":
+            continue
+        created = _at(q)
+        acted_raw = q.get("acted_at")
+        if not isinstance(acted_raw, str) or not created:
+            continue
+        try:
+            acted = dt.datetime.fromisoformat(acted_raw.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        deltas_min.append((acted - created).total_seconds() / 60.0)
+    mean_tta = f"{sum(deltas_min) / len(deltas_min):.1f} min" if deltas_min else "n/a"
+
+    def _bar(label: str, value: int, total: int) -> str:
+        pct = (value / total * 100.0) if total else 0.0
+        width = int(round(pct * 2.4))  # 240 px when 100%
+        return (
+            f'<div class="bar"><span class="lbl">{_esc(label)}</span>'
+            f'<span class="track"><span class="fill" style="width:{width}px"></span></span>'
+            f'<span class="num">{value} ({pct:.0f}%)</span></div>'
+        )
+
+    total = len(actions) or 1
+    kind_bars = "".join(_bar(k, v, total) for k, v in sorted(by_kind.items(), key=lambda kv: -kv[1]))
+    mode_bars = _bar("shadow", shadow_count, total) + _bar("live", live_count, total)
+    queue_total = len(queue) or 1
+    queue_status_bars = "".join(
+        _bar(k, v, queue_total) for k, v in sorted(queue_by_status.items(), key=lambda kv: -kv[1])
+    )
+    queue_channel_bars = "".join(
+        _bar(k, v, queue_total) for k, v in sorted(queue_by_channel.items(), key=lambda kv: -kv[1])
+    )
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>glossgo Salon Co-Pilot — stats</title>
+<style>
+  body {{ font: 14px/1.45 system-ui, sans-serif; max-width: 980px; margin: 32px auto;
+          padding: 0 24px; color: #1c1924; background: #faf8fb; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px; }}
+  h2 {{ font-size: 14px; margin: 28px 0 12px; text-transform: uppercase;
+        letter-spacing: 0.08em; color: #64596f; }}
+  .meta {{ color: #64596f; margin-bottom: 24px; }}
+  .nav a {{ color: #6f3aac; text-decoration: none; margin-right: 14px; }}
+  .nav a:hover {{ text-decoration: underline; }}
+  .kpi-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+              margin: 20px 0; }}
+  .kpi {{ background: #fff; padding: 16px; border-radius: 8px;
+          box-shadow: 0 1px 3px rgba(20,5,40,.06); }}
+  .kpi .label {{ color: #64596f; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: 0.06em; }}
+  .kpi .val {{ font-size: 24px; font-weight: 600; color: #3c2b50; margin-top: 4px; }}
+  .panel {{ background: #fff; padding: 16px 20px; border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(20,5,40,.06); margin-bottom: 16px; }}
+  .bar {{ display: grid; grid-template-columns: 130px 240px 1fr; gap: 12px;
+          align-items: center; padding: 4px 0; font-size: 13px; }}
+  .bar .lbl {{ color: #3c2b50; }}
+  .bar .track {{ background: #ece4f1; border-radius: 4px; height: 14px;
+                 overflow: hidden; }}
+  .bar .fill {{ display: block; height: 100%; background: #6f3aac; border-radius: 4px; }}
+  .bar .num {{ color: #64596f; font-variant-numeric: tabular-nums; }}
+</style></head>
+<body>
+<h1>glossgo Salon Co-Pilot — stats</h1>
+<p class="meta nav">
+  <a href="/dashboard">← back to dashboard</a>
+  Live aggregates from <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue</code>.
+</p>
+
+<div class="kpi-grid">
+  <div class="kpi"><div class="label">Actions / 24 h</div><div class="val">{len(actions_24h)}</div></div>
+  <div class="kpi"><div class="label">Actions / 7 d</div><div class="val">{len(actions_7d)}</div></div>
+  <div class="kpi"><div class="label">Total actions</div><div class="val">{len(actions)}</div></div>
+  <div class="kpi"><div class="label">Mean time to approval</div><div class="val">{mean_tta}</div></div>
+</div>
+
+<h2>Agent actions — by kind</h2>
+<div class="panel">{kind_bars or '<i>no data</i>'}</div>
+
+<h2>Agent actions — by mode (shadow / live)</h2>
+<div class="panel">{mode_bars}</div>
+
+<h2>Owner approval queue — by status</h2>
+<div class="panel">{queue_status_bars or '<i>no data</i>'}</div>
+
+<h2>Owner approval queue — by channel</h2>
+<div class="panel">{queue_channel_bars or '<i>no data</i>'}</div>
+</body></html>"""
 
 
 @app.post("/dashboard/{approval_id}/approve")
