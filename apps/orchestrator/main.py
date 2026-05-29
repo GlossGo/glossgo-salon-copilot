@@ -179,10 +179,21 @@ def _require_dashboard_session(request: Request) -> None:
 
 
 def _require_csrf(request: Request, posted_token: str | None) -> None:
-    # Origin/Referer pin: only accept POSTs that came from our own host.
+    """Origin/Referer pin (host-only, scheme- and port-agnostic on purpose:
+    Cloud Run frontends sometimes proxy from http://internal → https://public
+    and a strict scheme match would false-reject) plus signed-nonce match.
+    SameSite=Strict cookie is the primary CSRF defense; this is belt-and-braces.
+    """
+    from urllib.parse import urlparse
+
     origin = request.headers.get("origin") or request.headers.get("referer", "")
-    if origin and not origin.startswith(str(request.base_url)):
-        raise HTTPException(status_code=403, detail="bad origin")
+    if origin:
+        origin_host = urlparse(origin).hostname or ""
+        # Compare against the request's own host header (what the client connected to).
+        own_host = (request.headers.get("host") or "").split(":")[0]
+        if origin_host and origin_host.lower() != own_host.lower():
+            raise HTTPException(status_code=403, detail="bad origin")
+
     cookie_token = request.cookies.get(CSRF_COOKIE)
     if not cookie_token or not _verify_csrf(cookie_token):
         raise HTTPException(status_code=403, detail="missing csrf cookie")
