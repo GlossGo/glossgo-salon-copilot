@@ -208,3 +208,43 @@ green "Demo run complete" banner confirms the click.
 - 6 SECURITY.md gaps with explicit Day 6 / Day 7 fix plans for each
   open one.
 - 13 commits, all push'd to main, none with AI attribution.
+
+## Day 7 — 2026-05-29 (continued) — observability + submission docs
+
+**Goal.** Add a production-grade observability surface, write the demo
+video script, and bake the Devpost submission checklist.
+
+**Shipped.**
+- `GET /dashboard/stats` — read-only rollups over `copilot.agent_actions`
+  + `copilot.owner_approval_queue`. KPIs (actions over 24 h / 7 d / total +
+  mean time-to-approval) and four bar-chart panels (by kind, by mode,
+  by status, by channel). Pure CSS, no JS, no chart library. Same cookie/
+  bearer auth as `/dashboard`; no CSRF needed because it's read-only.
+  Hot-linked from the main dashboard.
+- `docs/demo-video-script.md` — 90-second timing storyboard with
+  narration. Built around the dashboard's natural 22 s "Trigger demo"
+  wait beat (architecture voiceover covers the spinner). Fallback
+  script + setup checklist included.
+- `docs/devpost-checklist.md` — required deliverables, three Devpost
+  registration questions answered, eligibility rationale (Softween LTD
+  as the qualifying startup entity in EMEA), the judging-criteria
+  evidence map, and a pre-submit hygiene checklist that I verified
+  before each commit (0 AI-tool footers, 0 tracked secrets, repo public,
+  `/ready` returns 200).
+- README polished: live URLs table at top, four measured wall-clock
+  numbers in the agents table, dashboard + stats screenshots embedded,
+  4-curl judge quickstart inline.
+
+**Verification.**
+- `/dashboard/stats` unauth → 401.
+- `/dashboard/stats` with cookie → 200, 3672 bytes HTML, all four
+  panels rendered with correct rollup numbers (3 shadow-mode
+  send_whatsapp actions, 4 pending approvals + 1 approved, 4 review
+  channel + 1 campaign channel rows).
+- Screenshot `docs/img/stats.png` re-rendered (65 K, 1280 px wide).
+
+**Not done today.**
+- OIDC audience re-debug + MCP lockdown (SECURITY.md Gap 1).
+- Per-tenant `business_id` JWT claim (SECURITY.md Gap 6).
+- Recording the actual demo video (script is ready; Bilal records).
+- Submitting on Devpost.
