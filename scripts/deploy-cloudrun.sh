@@ -54,8 +54,8 @@ gcloud run deploy copilot-orchestrator \
   --port 8080 \
   --memory 1Gi --cpu 1 \
   --max-instances 3 --concurrency 10 --timeout 300 \
-  --set-env-vars "MCP_TRANSPORT=http,ORCHESTRATOR_MODEL=gemini-2.5-flash,SUBAGENT_MODEL=gemini-2.5-flash,SHADOW_MODE=true,MCP_DATA_URL=$MCP_DATA_URL,MCP_COMMS_URL=$MCP_COMMS_URL,MCP_CALENDAR_URL=$MCP_CALENDAR_URL,GOOGLE_GENAI_USE_VERTEXAI=0" \
-  --set-secrets "GOOGLE_API_KEY=copilot-gemini-api-key:latest,MCP_BEARER_TOKEN=copilot-mcp-bearer-token:latest,COPILOT_WEBHOOK_BEARER=copilot-webhook-bearer:latest" \
+  --set-env-vars "MCP_TRANSPORT=http,ORCHESTRATOR_MODEL=gemini-2.5-flash,SUBAGENT_MODEL=gemini-2.5-flash,SHADOW_MODE=true,MCP_DATA_URL=$MCP_DATA_URL,MCP_COMMS_URL=$MCP_COMMS_URL,MCP_CALENDAR_URL=$MCP_CALENDAR_URL,GOOGLE_GENAI_USE_VERTEXAI=1,GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$REGION,SUPABASE_URL=$SUPABASE_URL_VAL" \
+  --set-secrets "MCP_BEARER_TOKEN=copilot-mcp-bearer-token:latest,COPILOT_WEBHOOK_BEARER=copilot-webhook-bearer:latest,SUPABASE_SERVICE_ROLE_KEY=copilot-supabase-service-role-key:latest,COPILOT_DASHBOARD_TOKEN=copilot-dashboard-token:latest" \
   --quiet 2>&1 | tail -3
 
 ORCH_URL=$(gcloud run services describe copilot-orchestrator --project "$PROJECT" --region "$REGION" --format='value(status.url)')

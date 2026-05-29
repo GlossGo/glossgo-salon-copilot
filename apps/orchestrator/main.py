@@ -113,37 +113,136 @@ def _row_html(cells: list[str]) -> str:
     return "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
 
 
-DASHBOARD_TOKEN = os.environ.get("COPILOT_DASHBOARD_TOKEN", "") or WEBHOOK_BEARER
-_DASHBOARD_AUTH = f"Bearer {DASHBOARD_TOKEN}".encode()
+DASHBOARD_TOKEN = os.environ.get("COPILOT_DASHBOARD_TOKEN", "")
+DASHBOARD_COOKIE = "copilot_dash"
+CSRF_COOKIE = "copilot_csrf"
+SESSION_TTL_SECONDS = 4 * 60 * 60  # 4 hours; cookies expire on browser too.
+
+if DASHBOARD_TOKEN and len(DASHBOARD_TOKEN) < 16:
+    raise RuntimeError(
+        "orchestrator: COPILOT_DASHBOARD_TOKEN must be >=16 chars or unset. "
+        "(Generate with `openssl rand -hex 32`. NEVER share with the event "
+        "webhook bearer — separate secret per SECURITY.md Gap 6.)"
+    )
+
+# Session cookies are HMAC-signed with DASHBOARD_TOKEN as the key so the server
+# is stateless (no Redis), and a stolen cookie cannot be forged without the
+# token. Cookie shape: `<expiry_unix>.<hex(hmac_sha256(expiry, token))>`.
+def _sign_session(expiry: int) -> str:
+    mac = hmac.new(DASHBOARD_TOKEN.encode(), str(expiry).encode(), "sha256").hexdigest()
+    return f"{expiry}.{mac}"
 
 
-def _require_dashboard_token(authorization: str | None, query_token: str | None) -> None:
-    """Accept either Authorization: Bearer <tok> OR ?token=<tok> on dashboard routes.
+def _verify_session(cookie: str | None) -> bool:
+    if not cookie or "." not in cookie:
+        return False
+    expiry_str, mac = cookie.split(".", 1)
+    if not expiry_str.isdigit():
+        return False
+    expiry = int(expiry_str)
+    if expiry < int(dt.datetime.now(dt.UTC).timestamp()):
+        return False
+    expected = hmac.new(DASHBOARD_TOKEN.encode(), expiry_str.encode(), "sha256").hexdigest()
+    return hmac.compare_digest(mac.encode(), expected.encode())
 
-    Both endpoints — read AND state-changing — go through this. Single token
-    today is the same as COPILOT_WEBHOOK_BEARER; production swaps for a
-    per-owner signed session (see SECURITY.md Gap 6, Day 6 plan).
-    """
-    if not DASHBOARD_TOKEN or len(DASHBOARD_TOKEN) < 16:
-        raise HTTPException(
-            status_code=503,
-            detail="dashboard disabled: COPILOT_DASHBOARD_TOKEN not configured",
-        )
-    if authorization and hmac.compare_digest(authorization.encode(), _DASHBOARD_AUTH):
+
+def _new_csrf() -> str:
+    """Random nonce, signed so the server need not remember it."""
+    nonce = secrets.token_hex(16)
+    mac = hmac.new(DASHBOARD_TOKEN.encode(), nonce.encode(), "sha256").hexdigest()[:32]
+    return f"{nonce}.{mac}"
+
+
+def _verify_csrf(token: str | None) -> bool:
+    if not token or "." not in token:
+        return False
+    nonce, mac = token.split(".", 1)
+    expected = hmac.new(DASHBOARD_TOKEN.encode(), nonce.encode(), "sha256").hexdigest()[:32]
+    return hmac.compare_digest(mac.encode(), expected.encode())
+
+
+def _require_dashboard_session(request: Request) -> None:
+    """Cookie-only auth. No tokens in URLs, no header bearer for the browser
+    flow. Bearer-via-Authorization stays available for curl/scripts because
+    judges still need an automation entry point — and Cloud Run logs the
+    request line, never headers, so a header bearer doesn't leak."""
+    if not DASHBOARD_TOKEN:
+        raise HTTPException(status_code=503, detail="dashboard disabled: set COPILOT_DASHBOARD_TOKEN")
+    cookie = request.cookies.get(DASHBOARD_COOKIE)
+    if _verify_session(cookie):
         return
-    if query_token and hmac.compare_digest(
-        f"Bearer {query_token}".encode(), _DASHBOARD_AUTH
-    ):
+    auth = request.headers.get("authorization", "")
+    expected = f"Bearer {DASHBOARD_TOKEN}".encode()
+    if auth and hmac.compare_digest(auth.encode(), expected):
         return
     raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _require_csrf(request: Request, posted_token: str | None) -> None:
+    # Origin/Referer pin: only accept POSTs that came from our own host.
+    origin = request.headers.get("origin") or request.headers.get("referer", "")
+    if origin and not origin.startswith(str(request.base_url)):
+        raise HTTPException(status_code=403, detail="bad origin")
+    cookie_token = request.cookies.get(CSRF_COOKIE)
+    if not cookie_token or not _verify_csrf(cookie_token):
+        raise HTTPException(status_code=403, detail="missing csrf cookie")
+    if not posted_token or not hmac.compare_digest(
+        cookie_token.encode(), posted_token.encode()
+    ):
+        raise HTTPException(status_code=403, detail="csrf mismatch")
+
+
+LOGIN_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>glossgo Salon Co-Pilot — sign in</title>
+<style>body{font:14px/1.45 system-ui,sans-serif;max-width:380px;margin:80px auto;
+  padding:0 24px;color:#1c1924;background:#faf8fb}
+input{width:100%;padding:8px;border:1px solid #d6c5e0;border-radius:6px;font:inherit;
+  margin:8px 0 14px}
+button{background:#6f3aac;color:#fff;border:none;padding:8px 14px;border-radius:4px;
+  font:inherit;cursor:pointer}</style></head>
+<body><h1>Sign in</h1>
+<form method="post" action="/dashboard/login" autocomplete="off">
+<label>Dashboard token<input name="token" type="password" required></label>
+<button>continue</button></form></body></html>"""
+
+
+@app.get("/dashboard/login", response_class=HTMLResponse)
+async def dashboard_login_form() -> str:
+    return LOGIN_HTML
+
+
+@app.post("/dashboard/login")
+async def dashboard_login(request: Request) -> "Response":  # noqa: F821
+    from fastapi.responses import RedirectResponse
+
+    form = await request.form()
+    posted = form.get("token", "")
+    if not DASHBOARD_TOKEN or not hmac.compare_digest(
+        str(posted).encode(), DASHBOARD_TOKEN.encode()
+    ):
+        # Fixed 401 + redirect-to-login so a brute-forcer learns nothing
+        # beyond "wrong token" and doesn't get rate-limit info from us.
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    expiry = int(dt.datetime.now(dt.UTC).timestamp()) + SESSION_TTL_SECONDS
+    session_cookie = _sign_session(expiry)
+    csrf_cookie = _new_csrf()
+    resp = RedirectResponse(url="/dashboard", status_code=303)
+    cookie_kwargs = dict(httponly=True, secure=True, samesite="strict",
+                         max_age=SESSION_TTL_SECONDS, path="/dashboard")
+    resp.set_cookie(DASHBOARD_COOKIE, session_cookie, **cookie_kwargs)
+    # CSRF cookie is NOT HttpOnly so the form template can read it and
+    # echo it into the hidden input. Still SameSite=Strict + Secure.
+    resp.set_cookie(CSRF_COOKIE, csrf_cookie,
+                    httponly=False, secure=True, samesite="strict",
+                    max_age=SESSION_TTL_SECONDS, path="/dashboard")
+    return resp
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(
-    token: str | None = None,
-    authorization: str | None = Header(default=None),
-) -> str:
-    _require_dashboard_token(authorization, token)
+async def dashboard(request: Request) -> str:
+    _require_dashboard_session(request)
     actions = await _supabase_get(
         "agent_actions",
         {"select": "id,business_id,kind,payload,shadow,created_at",
@@ -166,14 +265,24 @@ async def dashboard(
         for a in actions
     ) or _row_html(["—", "<i>no agent actions yet</i>", "", ""])
 
-    tok_q = f"?token={_esc(token)}" if token else ""
+    csrf = request.cookies.get(CSRF_COOKIE) or _new_csrf()
+    def _approve_form(approval_id: str) -> str:
+        # Approval IDs are UUIDs (checked at write-time by the MCP server's
+        # Zod schema). Belt-and-braces: refuse to render anything else.
+        if not _UUID_RE.match(str(approval_id)):
+            return ""
+        return (
+            f'<form method="post" action="/dashboard/{_esc(approval_id)}/approve">'
+            f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+            '<button>approve</button></form>'
+        )
+
     queue_rows = "\n".join(
         _row_html([
             _ts(q.get("created_at")),
             _esc(q.get("channel")),
             _esc(str(q.get("payload", ""))[:200]),
-            f'<form method="post" action="/dashboard/{q.get("id")}/approve{tok_q}">'
-            '<button>approve</button></form>',
+            _approve_form(str(q.get("id", ""))),
         ])
         for q in queue
     ) or _row_html(["—", "<i>queue empty</i>", "", ""])
@@ -216,12 +325,10 @@ Refresh to see the latest events.</p>
 
 
 @app.post("/dashboard/{approval_id}/approve")
-async def approve(
-    approval_id: str,
-    token: str | None = None,
-    authorization: str | None = Header(default=None),
-) -> dict[str, object]:
-    _require_dashboard_token(authorization, token)
+async def approve(approval_id: str, request: Request) -> dict[str, object]:
+    _require_dashboard_session(request)
+    form = await request.form()
+    _require_csrf(request, form.get("csrf"))
     if not _UUID_RE.match(approval_id):
         raise HTTPException(status_code=400, detail="invalid id")
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:

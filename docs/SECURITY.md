@@ -113,29 +113,53 @@ A compromised bearer can burst events.
 an `agent_actions` count over the trailing 60s; the orchestrator drops
 on-rate-limit events and writes them to a deferred queue.
 
-### Gap 6 — Dashboard auth is a single shared bearer
+### Gap 6 — Dashboard is single-tenant (no per-owner identity)
 
-`/dashboard` and `/dashboard/{id}/approve` accept either
-`Authorization: Bearer <COPILOT_DASHBOARD_TOKEN>` or `?token=<…>`.
-Today that token defaults to `COPILOT_WEBHOOK_BEARER` (one
-deployment-wide secret). Any holder of the token sees every tenant's
-queue and can approve any row.
+Status as of 2026-05-29 (Day 5): URL tokens removed, signed cookie
+session + CSRF nonce SHIPPED; multi-tenant authorization still pending.
 
-Production replacement (Day 6-7): require a per-owner signed session
-cookie issued by `auth.glossgo.com`. The dashboard route resolves the
-caller's `business_id` from the cookie and:
-  1. Filters every Supabase read by that `business_id`.
-  2. On approve, SELECT-then-PATCH and refuse if
-     `row.business_id != caller.business_id`.
-  3. Add a CSRF token to the approval form, verified server-side.
+**Shipped (Day 5).**
+- `COPILOT_DASHBOARD_TOKEN` is now a **separate secret** from
+  `COPILOT_WEBHOOK_BEARER`. Orchestrator fails to boot if the dashboard
+  token is set but shorter than 16 chars; dashboard returns 503 if not
+  set at all. No silent fall-through.
+- Browser flow: `GET /dashboard/login` shows a password form;
+  `POST /dashboard/login` validates the token with `hmac.compare_digest`,
+  sets an HMAC-signed session cookie (`copilot_dash`, HttpOnly + Secure
+  + SameSite=Strict + Path=/dashboard + 4 h TTL) and a CSRF cookie
+  (`copilot_csrf`, Secure + SameSite=Strict, NOT HttpOnly so the form
+  can echo it). Cookies signed with the dashboard token as the HMAC key
+  so the server stays stateless.
+- `GET /dashboard` and `POST /dashboard/{id}/approve` accept either the
+  signed cookie OR an `Authorization: Bearer <token>` header (kept for
+  scripted access). Query-string tokens are no longer accepted.
+- CSRF nonce hidden input on every approve form; server verifies the
+  nonce HMAC AND that the request's `Origin/Referer` starts with the
+  orchestrator's own base URL.
+- Approve handler re-SELECTs the row with `status=pending` before
+  PATCHing; a stale or already-acted row returns 404, not silent
+  re-approve.
+- Approval-id format is hex-UUID v4; the form template refuses to
+  render an approve button for any other shape (belt and braces with
+  the MCP server's Zod check).
 
-Today's mitigations until that ships:
-- Token is a 32-byte random secret in Secret Manager (`copilot-webhook-bearer`),
-  same crypto strength as the event-webhook gate.
-- Approve handler re-SELECTs the row with `status=pending` filter before
-  PATCHing; a stale or already-acted approval returns 404 not silent success.
-- Approval-id format is hex-UUID; brute-forcing without the token is
-  effectively a `2^128` search.
+**Still pending — multi-tenant authorization.**
+- Both Supabase reads (`agent_actions`, `owner_approval_queue`) load
+  EVERY tenant's rows. The PATCH on `/approve` is gated on
+  `status=pending` but does not check `row.business_id ==
+  caller.business_id` (because the dashboard token has no notion of
+  "which tenant").
+
+**Next step (Day 7).**
+- Replace the static dashboard token with per-owner sessions issued by
+  `auth.glossgo.com` (Supabase Auth → signed JWT in the cookie).
+- Resolve `caller.business_id` from the cookie claim at request time.
+- Append `business_id=eq.<caller_business_id>` to every Supabase read
+  and to the PATCH; refuse if the row doesn't belong to the caller.
+- Until that ships, the dashboard remains intended for the
+  single-tenant glossgo Co-Pilot demo + the salon operations team's
+  internal review. Operate behind glossgo's CF Access perimeter when
+  it lands on a real subdomain.
 
 ### Gap 5 — OIDC ID token TTL vs. instance lifetime
 
