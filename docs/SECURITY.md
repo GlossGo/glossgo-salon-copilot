@@ -90,10 +90,12 @@ Next steps:
      copilot-runtime --audiences=<service_url>` validates, flip
      `MCP_USE_OIDC=1` on the orchestrator and re-lock the MCPs to
      `--no-allow-unauthenticated`.
-- **Day 7** — Add a `glossgo-be`-signed JWT in a custom header carrying
+- ~~**Day 7** — Add a `glossgo-be`-signed JWT in a custom header carrying
   the verified `business_id` claim. The MCP server checks the signature
   and rejects any tool call whose `business_id` argument doesn't match
-  the claim.
+  the claim.~~ ✅ Server-side enforcement variant SHIPPED 2026-05-30
+  (see "Per-tenant authorization" closed-state block at the bottom of
+  the file).
 
 ### Gap 2 — Orchestrator trusts the bearer to attest tenant
 
@@ -194,6 +196,50 @@ the `to` arg must equal `select phone from customers where id = $candidate_id`.
   versioned, not in-place.
 - `MCP_BEARER_TOKEN` and `COPILOT_WEBHOOK_BEARER` are 32-byte random
   (`openssl rand -hex 32`). They are not the same secret.
+
+## Closed gaps
+
+### Per-tenant authorization on MCP-data reads — SHIPPED 2026-05-30
+
+Every MCP-data read tool (`get_cancelled_booking`, `get_review`,
+`get_customer`, `get_service`) now takes a mandatory `business_id` arg
+and appends a server-side `.eq("business_id", business_id)` filter
+before issuing the Supabase query. If the row doesn't belong to the
+caller's tenant, the server returns
+`booking <id> not found in tenant <bid>` — never the row.
+
+Sub-agent instructions updated correspondingly: every tool call now
+passes the verified session `business_id` (the orchestrator extracts
+this from the bearer-authenticated `/event` payload). The agents are
+explicitly forbidden from ever picking a `business_id` from untrusted
+content (e.g. a review text). The model can't bypass it even if a
+prompt-injected review attempts to.
+
+**Live proof.** Cross-tenant smoke test against the production URL:
+
+```text
+$ curl -X POST $ORCH/event \
+    -H "Authorization: Bearer $WB" \
+    -d '{"type":"booking.cancelled",
+         "business_id":"99999999-0000-0000-0000-000000000099",   # bogus tenant
+         "booking_id":"55555555-0000-0000-0000-000000000001"}'   # real booking
+{"session_id":"evt-249fb931578c",
+ "event_type":"booking.cancelled",
+ "agent_response":"İptal edilen rezervasyon için bekleme listesi
+   eşleşmesi bulunmaya çalışıldı ancak bir hata nedeniyle işlem
+   tamamlanamadı.",
+ "trace_url":"/dashboard/trace/evt-249fb931578c"}
+```
+
+The agent saw an empty result set from `get_cancelled_booking` (the
+booking belongs to tenant `1111...` not `9999...`), couldn't proceed,
+and returned a polite Turkish error. **The drawing of the row was
+refused at the database query level, not at the agent reasoning
+level** — a compromised LLM cannot read it either.
+
+This closes the authorization half of Gap 6 / the Day 7 line in
+Gap 1. The OIDC-signed-identity half (Gap 1 Day 6) remains open;
+documented above.
 
 ## Reporting
 
