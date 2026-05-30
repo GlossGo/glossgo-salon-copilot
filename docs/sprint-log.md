@@ -313,3 +313,50 @@ keys — all on Vertex AI.
 - `08a5514` battle screenshot
 
 **Day 8 (user-only): record 90s video + submit.**
+
+## 2026-05-30 — credit arrived, real-volume populate run
+
+**Credit landing.** Devpost $500 + GenAI App Builder ₺45K + Marketing
+AI Agents Challenge ₺22.5K all visible in the glossgo-copilot project
+billing UI. Total ~₺67K + $500 USD available immediately.
+
+**Real-volume populate (used <\$1 of credit).** Fired 20 events
+through the live `/event` endpoint in parallel, all HTTP 200:
+- 5× `booking.cancelled` (Zeynep Kaya match), 28-41 s each
+- 5× `review.created` 2★, 10-18 s each
+- 3× `review.created` 5★, 11-12 s each
+- 3× `review.created` 4★, 10-12 s each
+- 4× `calendar.weekly_review` across 4 different weeks, 6-18 s each
+
+**Dashboard state after populate:**
+
+| Metric | Before | After |
+|---|---|---|
+| Pending owner approvals | 4 | 17 |
+| Recent `send_whatsapp` shadow actions | 3 | 16 |
+| English decision pills | 2 | 18 |
+| Recent reasoning traces in panel | 1 | 5 |
+
+Screenshots refreshed: `docs/img/dashboard.png` (215 K → 624 K, captures
+the busy state) + `docs/img/stats.png` (now backed by real 24h activity).
+
+**Multi-tenant authorization fix committed but not yet deployed.** A
+separate session shipped commit `a5386a2`: every MCP-data read
+(`get_cancelled_booking`, `get_review`, `get_customer`, `get_service`)
+now requires a `business_id` arg and enforces a server-side
+`.eq("business_id", business_id)` filter. Sub-agent instructions
+updated to pass the verified session `business_id` into every tool
+call and never pick one from untrusted content. This closes the
+authorization half of SECURITY.md Gap 6.
+
+The source is in `main` but Cloud Run still serves the previous build
+(my gcloud token expired during the rebuild attempt; needs interactive
+re-auth). The 20-event populate run above hit the previous deployed
+code path, which is unaffected at the URL level — judges-facing surface
+keeps working.
+
+**Day 8 (pending).**
+- `gcloud auth login` and redeploy the tenant-scoped image so the
+  authorization tightening goes live.
+- Demo video kaydı.
+- Devpost form fill + submit.
