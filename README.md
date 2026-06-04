@@ -4,6 +4,8 @@
 > reviews, and waitlist matching while the owner is busy.
 > **Submission for the Google for Startups AI Agents Challenge, Track 1 (Build).**
 
+![glossgo Salon Co-Pilot - AI agents that run the salon while you work](docs/img/hero.jpg)
+
 [![architecture](docs/img/architecture.png)](docs/architecture.mmd)
 
 ## Live now
@@ -24,12 +26,20 @@ drops, the next week is suddenly empty), an orchestrator agent routes
 the event to a specialist sub-agent that takes autonomous action via
 Model Context Protocol (MCP) tools.
 
+![Three specialist agents, one orchestrator](docs/img/three-agents.jpg)
+
 | Trigger | Sub-agent | Action | Live wall clock |
 |---|---|---|---|
 | `booking.cancelled` | No-Show Recovery | Pick best waitlist match (50-30-20 service / time / loyalty), draft personalized Turkish WhatsApp, shadow-mode send | **28 s** |
 | `review.created` (2★) | Review Responder | Empathetic Turkish reply, push to owner approval queue | **17 s** |
 | `review.created` (5★) | Review Responder | Thankful reply + come-back invite, push to queue | **12 s** |
 | `calendar.weekly_review` | Calendar Optimizer | Find the biggest off-peak gap, draft promo + audience tag | **4 s** (refuses to invent on empty schedule) |
+
+![How it works: salon event to Gemini orchestrator to specialist agent to one-tap owner approval to send](docs/img/how-it-works.jpg)
+
+Shadow mode is on by default, so every action lands as an owner-approved draft, never an automatic send:
+
+![Shadow mode owner approval queue](docs/img/shadow-mode.jpg)
 
 ![dashboard](docs/img/dashboard.png)
 

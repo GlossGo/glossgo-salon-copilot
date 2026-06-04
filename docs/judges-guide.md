@@ -4,6 +4,8 @@ Final submission write-up for the Google for Startups AI Agents Challenge,
 Track 1 (Build). Repo + live URLs at the bottom. Designed to be paste-able
 into Devpost section by section.
 
+![glossgo Salon Co-Pilot - AI agents that run the salon while you work](img/hero.jpg)
+
 ---
 
 ## Inspiration
@@ -41,6 +43,10 @@ salon events forwarded from production (`booking.cancelled`,
 - **Calendar Optimizer** — every Monday it scans the next 7 days, finds the
   single biggest occupancy gap, drafts one off-peak promo with a target
   audience tag, and queues it for owner approval.
+
+![Three specialist agents, one orchestrator](img/three-agents.jpg)
+
+![How it works - salon event to Gemini orchestrator to specialist agent to one-tap owner approval to send](img/how-it-works.jpg)
 
 **End-to-end live results** (HTTP 200 on the public Cloud Run URL):
 
@@ -148,6 +154,8 @@ The challenge's emphasis on ADK and MCP shaped the structure directly:
   Every `send_whatsapp` and every booking write lands in
   `copilot.agent_actions` / `copilot.owner_approval_queue` instead of the
   BSP / booking table.
+
+  ![Owner approval queue - shadow mode, nothing sends without owner approval](img/shadow-mode.jpg)
 
 ## Challenges we ran into (the honest list)
 

@@ -1,91 +1,87 @@
-%% glossgo Salon Co-Pilot — system architecture
-%% Render with: mmdc -i architecture.mmd -o architecture.png -b transparent -w 2200
+%% glossgo Salon Co-Pilot - system architecture (live deployment)
+%% Render: mmdc -i architecture.mmd -o img/architecture.png -b white -w 2400 -t neutral
 flowchart TB
-  subgraph CUSTOMER ["Customer surface (out of scope)"]
-    cust[Customer app on glossgo.com]
-    gmaps[Google review on Maps]
+
+  subgraph TRIG ["1 - Triggers (from glossgo production)"]
+    direction LR
+    bc["booking.cancelled"]
+    rc["review.created"]
+    wk["calendar.weekly_review<br/>Monday cron"]
   end
 
-  subgraph BE ["glossgo-be production (existing)"]
-    api[Hono API on Cloudflare Workers]
-    db[(Supabase prod Postgres)]
-    wapi[WhatsApp Business API]
+  orch["<b>copilot-orchestrator</b> &nbsp; FastAPI on Cloud Run<br/>POST /event &middot; Bearer-gated<br/>ADK LlmAgent &middot; Gemini 2.5 Flash<br/>routes via sub_agents=[...] &middot; no hand-written router"]
+
+  subgraph AGENTS ["2 - Specialist sub-agents &nbsp; ADK &middot; Gemini 2.5 Flash"]
+    direction LR
+    nsr["<b>No-Show Recovery</b><br/>waitlist 50/30/20<br/>service/time/loyalty match"]
+    rr["<b>Review Responder</b><br/>rating-aware<br/>tone-matched TR reply"]
+    co["<b>Calendar Optimizer</b><br/>biggest occupancy gap<br/>off-peak promo"]
   end
 
-  subgraph WORKER ["Event bridge"]
-    ev[Worker route /copilot/events<br/>signs JWT, POSTs to Pub/Sub]
+  subgraph MCP ["3 - MCP servers &nbsp; TypeScript &middot; Streamable HTTP (remote) or stdio (local)"]
+    direction LR
+    mcpD["<b>mcp-data</b><br/>tenant-scoped reads<br/>business_id enforced"]
+    mcpC["<b>mcp-comms</b><br/>WhatsApp draft +<br/>owner approval queue"]
+    mcpK["<b>mcp-calendar</b><br/>booking writes"]
   end
 
-  subgraph PS ["Google Pub/Sub"]
-    topic[(copilot-events topic)]
+  subgraph DATA ["4 - Supabase &middot; copilot schema (isolated, service_role only)"]
+    direction LR
+    reads[("reads<br/>bookings &middot; customers<br/>waitlist &middot; services &middot; reviews")]
+    writes[("writes<br/>agent_actions<br/>owner_approval_queue")]
   end
 
-  subgraph RUN ["Cloud Run — europe-west4"]
-    orch[copilot-orchestrator<br/>Python ADK 2.x · Gemini 2.5 Pro<br/>POST /event auth-gated]
-    nsr[no-show-recovery<br/>Gemini 2.5 Flash]
-    rr[review-responder<br/>Gemini 2.5 Flash]
-    co[calendar-optimizer<br/>Gemini 2.5 Flash]
-    mcpD[mcp-data<br/>TypeScript · Streamable HTTP]
-    mcpC[mcp-comms<br/>TypeScript · Streamable HTTP]
-    mcpK[mcp-calendar<br/>TypeScript · Streamable HTTP]
+  wapi["WhatsApp Business API<br/>(real send)"]
+
+  subgraph UI ["5 - Owner dashboard &nbsp; cookie session + CSRF + Origin pin"]
+    direction LR
+    dash["/dashboard<br/>approval queue"]
+    tr["/dashboard/trace<br/>white-box reasoning"]
+    bt["/dashboard/battle<br/>Pro vs Flash vs Lite cost"]
+    ec["/dashboard/economics<br/>ARR calculator"]
   end
 
-  subgraph DATA ["Supabase — copilot schema (isolated)"]
-    bk[(bookings)]
-    cu[(customers)]
-    wl[(waitlist_entries)]
-    sv[(services)]
-    rv[(reviews)]
-    aa[(agent_actions)]
-    oaq[(owner_approval_queue)]
-  end
-
-  subgraph SEC ["Secret Manager + IAM"]
-    sec[copilot-* secrets<br/>WEBHOOK_BEARER · MCP_BEARER · GEMINI_API_KEY · SUPABASE_SRK]
-    iam[Cloud Run runtime SA<br/>copilot-orchestrator@…]
-  end
-
-  cust -->|booking, cancel| api
-  gmaps -.->|fetched by glossgo-be cron| api
-  api -->|booking.cancelled, review.created| ev
-  ev -->|push OIDC JWT| topic
-  topic -->|push subscription| orch
+  bc --> orch
+  rc --> orch
+  wk --> orch
 
   orch --> nsr
   orch --> rr
   orch --> co
-  nsr ---|MCP tool call| mcpD
-  nsr ---|MCP tool call| mcpC
-  nsr ---|MCP tool call| mcpK
-  rr  ---|MCP tool call| mcpD
-  rr  ---|MCP tool call| mcpC
-  co  ---|MCP tool call| mcpD
-  co  ---|MCP tool call| mcpC
 
-  mcpD --> bk
-  mcpD --> cu
-  mcpD --> wl
-  mcpD --> sv
-  mcpD --> rv
-  mcpC --> aa
-  mcpC --> oaq
-  mcpC -.->|SHADOW_MODE=false only| wapi
-  mcpK --> bk
+  nsr -->|MCP tool calls| mcpD
+  rr  --> mcpD
+  co  --> mcpD
+  nsr --> mcpC
+  rr  --> mcpC
+  co  --> mcpC
+  co  --> mcpK
 
-  sec -.-> orch
-  sec -.-> mcpD
-  sec -.-> mcpC
-  sec -.-> mcpK
-  iam -.-> orch
-  iam -.->|--no-allow-unauthenticated invoker| mcpD
-  iam -.->|--no-allow-unauthenticated invoker| mcpC
-  iam -.->|--no-allow-unauthenticated invoker| mcpK
+  mcpD --> reads
+  mcpC --> writes
+  mcpK --> writes
+  mcpC -.->|"SHADOW_MODE=false only<br/>(off by default)"| wapi
 
+  writes --> dash
+  writes --> tr
+
+  note["All 4 services on Cloud Run &middot; europe-west4 &middot; secrets in Secret Manager &middot; Gemini via Vertex AI &middot; shadow mode ON by default"]
+  UI --- note
+
+  classDef trig  fill:#ede9fe,stroke:#6d28d9,color:#2e1065
   classDef agent fill:#fbe7f5,stroke:#a23db4,color:#3b1340
   classDef mcp   fill:#e7f1fb,stroke:#1f6fb8,color:#0d2a4d
   classDef data  fill:#fff5d6,stroke:#a4862e,color:#36280a
-  classDef ext   fill:#eee,stroke:#777,color:#222
-  class orch,nsr,rr,co agent
+  classDef ext   fill:#eaeaea,stroke:#666,color:#222
+  classDef ui    fill:#e6f7ee,stroke:#15803d,color:#052e16
+  classDef root  fill:#fde2e4,stroke:#be123c,color:#4c0519
+  classDef notec fill:#f8fafc,stroke:#94a3b8,color:#334155
+
+  class bc,rc,wk trig
+  class orch root
+  class nsr,rr,co agent
   class mcpD,mcpC,mcpK mcp
-  class bk,cu,wl,sv,rv,aa,oaq data
-  class api,db,wapi,gmaps,cust ext
+  class reads,writes data
+  class dash,tr,bt,ec ui
+  class wapi ext
+  class note notec
