@@ -360,3 +360,37 @@ keeps working.
   authorization tightening goes live.
 - Demo video kaydı.
 - Devpost form fill + submit.
+
+## 2026-06-08 — deploy-state reconciliation + full live re-verification
+
+**Finding: the "Day 8 redeploy" item above was already done.** The note
+in the 2026-05-30 section ("source is in main but Cloud Run still serves
+the previous build") was written *before* a later session deployed it.
+Reconciled today against the live services:
+
+- Deployed orchestrator + mcp-data images are tagged `3493d19`, which
+  **already contains** the tenant-scoping fix `a5386a2`
+  (`git merge-base --is-ancestor a5386a2 3493d19` = true).
+- The only commits since the deployed `3493d19` (`e35da42`, `62e5d8d`,
+  `a6cdda7`) touch **docs, the landing app, README, and image-gen
+  scripts only** — zero changes under `apps/orchestrator/` or
+  `apps/mcp-data/`. So the running services are functionally current;
+  **no Cloud Run redeploy was required.**
+
+**Independent live verification (this session, against the deployed URLs):**
+
+| Check | Expected | Got |
+|---|---|---|
+| Cross-tenant MCP `get_cancelled_booking` (wrong `business_id`) | refused | `isError:true` — `booking … not found in tenant 99999999-…` |
+| Same-tenant control (right `business_id`) | booking JSON | full row returned (business_id `1111…0001`) |
+| `booking.cancelled` → no-show-recovery | 200 + TR draft | 200 in 27.7 s, matched Zeynep Kaya, shadow `drafted` |
+| `review.created` 2★ → review-responder | 200 + queue row | 200 in 11.3 s, TR reply, queue id `49d661ff…` + trace URL |
+| `/ready` (public) | 200 | 200 |
+| `/dashboard` (no auth) | 401 | 401 |
+
+The authorization half of SECURITY.md Gap 6 is confirmed **enforced in
+production**, not just in source. Landing page `copilot.glossgo.com` is
+live (HTTP 200) and serving the current explainer imagery.
+
+**Genuinely remaining (user-only, unchanged):** record the ~90 s demo
+video and fill + submit the Devpost form. No engineering work outstanding.
