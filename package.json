@@ -10,8 +10,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "clean": "turbo run clean && rm -rf node_modules .turbo",
-    "seed:demo": "tsx scripts/seed-demo-salon.ts"
+    "clean": "turbo run clean && rm -rf node_modules .turbo"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

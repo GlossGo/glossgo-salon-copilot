@@ -132,12 +132,20 @@ session + CSRF nonce SHIPPED; multi-tenant authorization still pending.
   (`copilot_csrf`, Secure + SameSite=Strict, NOT HttpOnly so the form
   can echo it). Cookies signed with the dashboard token as the HMAC key
   so the server stays stateless.
-- `GET /dashboard` and `POST /dashboard/{id}/approve` accept either the
-  signed cookie OR an `Authorization: Bearer <token>` header (kept for
-  scripted access). Query-string tokens are no longer accepted.
-- CSRF nonce hidden input on every approve form; server verifies the
-  nonce HMAC AND that the request's `Origin/Referer` starts with the
-  orchestrator's own base URL.
+- `GET /dashboard` and the POST routes (`/dashboard/{id}/approve`,
+  `/dashboard/demo`) accept either the signed cookie OR an
+  `Authorization: Bearer <token>` header (kept for scripted access).
+  Query-string tokens are no longer accepted.
+- CSRF nonce hidden input on every approve form; for cookie-session
+  (browser) requests the server verifies the nonce HMAC AND that the
+  request's `Origin/Referer` starts with the orchestrator's own base URL.
+  Requests authenticated by the `Authorization: Bearer` header are CSRF-exempt
+  — a cross-site attacker cannot set a custom Authorization header from a
+  browser, so the bearer is itself proof the request is not a forged
+  cookie-ride. The exemption fires only when a valid dashboard bearer is
+  present; cookie-only requests still get the full nonce + Origin check, so
+  browser CSRF protection is unchanged. This is what makes the documented
+  scripted POST path actually work without a browser login.
 - Approve handler re-SELECTs the row with `status=pending` before
   PATCHing; a stale or already-acted row returns 404, not silent
   re-approve.

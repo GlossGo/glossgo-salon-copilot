@@ -161,6 +161,17 @@ def _verify_csrf(token: str | None) -> bool:
     return hmac.compare_digest(mac.encode(), expected.encode())
 
 
+def _has_valid_dashboard_bearer(request: Request) -> bool:
+    """True iff the request carries a valid `Authorization: Bearer <token>`
+    header for the dashboard token. The header bearer is the scripted/automation
+    entry point (curl, judges' tooling) and is constant-time compared."""
+    if not DASHBOARD_TOKEN:
+        return False
+    auth = request.headers.get("authorization", "")
+    expected = f"Bearer {DASHBOARD_TOKEN}".encode()
+    return bool(auth) and hmac.compare_digest(auth.encode(), expected)
+
+
 def _require_dashboard_session(request: Request) -> None:
     """Cookie-only auth. No tokens in URLs, no header bearer for the browser
     flow. Bearer-via-Authorization stays available for curl/scripts because
@@ -171,9 +182,7 @@ def _require_dashboard_session(request: Request) -> None:
     cookie = request.cookies.get(DASHBOARD_COOKIE)
     if _verify_session(cookie):
         return
-    auth = request.headers.get("authorization", "")
-    expected = f"Bearer {DASHBOARD_TOKEN}".encode()
-    if auth and hmac.compare_digest(auth.encode(), expected):
+    if _has_valid_dashboard_bearer(request):
         return
     raise HTTPException(status_code=401, detail="unauthorized")
 
@@ -183,8 +192,18 @@ def _require_csrf(request: Request, posted_token: str | None) -> None:
     Cloud Run frontends sometimes proxy from http://internal → https://public
     and a strict scheme match would false-reject) plus signed-nonce match.
     SameSite=Strict cookie is the primary CSRF defense; this is belt-and-braces.
+
+    Scripted callers that authenticate with the `Authorization: Bearer` header
+    (the documented automation path) are exempt: a cross-site attacker cannot
+    set a custom Authorization header from a browser, so a CSRF token would be
+    pure friction for them. Browser/cookie callers still get the full check —
+    this exemption only fires when a valid dashboard bearer is present, never
+    for cookie-only sessions, so it does not weaken browser CSRF protection.
     """
     from urllib.parse import urlparse
+
+    if _has_valid_dashboard_bearer(request):
+        return
 
     origin = request.headers.get("origin") or request.headers.get("referer", "")
     if origin:
@@ -399,6 +418,109 @@ Source: <code>copilot.agent_actions</code> + <code>copilot.owner_approval_queue<
 </body></html>"""
 
 
+def _serialize_part(part: object) -> dict[str, object]:
+    """Flatten an ADK event part into a JSON-safe dict for the trace timeline."""
+    out: dict[str, object] = {}
+    if getattr(part, "text", None):
+        out["text"] = part.text
+    fc = getattr(part, "function_call", None)
+    if fc:
+        out["function_call"] = {
+            "name": getattr(fc, "name", None),
+            "args": dict(getattr(fc, "args", {}) or {}),
+        }
+    fr = getattr(part, "function_response", None)
+    if fr:
+        out["function_response"] = {
+            "name": getattr(fr, "name", None),
+            "response": getattr(fr, "response", None),
+        }
+    return out
+
+
+async def _run_agent_capturing_trace(
+    session_id: str,
+    user_id: str,
+    business_id: str,
+    user_message: str,
+) -> tuple[str, str]:
+    """Run the root agent for one event, capture every step into a white-box
+    reasoning trace, and best-effort persist it to `copilot.agent_traces`.
+
+    Shared by `/event` (Bearer-authenticated webhook) and `/dashboard/demo`
+    (cookie/Bearer-authenticated button) so BOTH surface the traces the
+    dashboard's "Recent reasoning traces" panel reads back. Returns a
+    `(resolved_session_id, final_response_text)` tuple — the resolved id is
+    the one the trace rows were persisted under, so callers can build a
+    matching `/dashboard/trace/{id}` link.
+    """
+    session = await _runner.session_service.create_session(
+        app_name=_runner.app_name,
+        user_id=user_id,
+        session_id=session_id,
+    )
+
+    final_text: list[str] = []
+    trace_rows: list[dict[str, object]] = []
+    seq = 0
+
+    async for event in _runner.run_async(
+        user_id=user_id,
+        session_id=session.id,
+        new_message=genai_types.Content(
+            role="user",
+            parts=[genai_types.Part.from_text(text=user_message)],
+        ),
+    ):
+        # Capture each event for the /dashboard/trace/{session_id} page.
+        try:
+            parts = []
+            if event.content and event.content.parts:
+                parts = [_serialize_part(p) for p in event.content.parts]
+            evt_type = "final" if event.is_final_response() else "step"
+            if parts and any("function_call" in p for p in parts):
+                evt_type = "tool_call"
+            elif parts and any("function_response" in p for p in parts):
+                evt_type = "tool_response"
+            trace_rows.append({
+                "session_id": session.id,
+                "business_id": str(business_id),
+                "event_type": evt_type,
+                "agent_name": getattr(event, "author", None),
+                "content": {"parts": parts, "role": getattr(event.content, "role", None) if event.content else None},
+                "seq": seq,
+            })
+            seq += 1
+        except Exception as exc:
+            print(f"[trace] capture failed: {type(exc).__name__}: {exc}", flush=True)
+
+        if event.is_final_response() and event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.text:
+                    final_text.append(part.text)
+
+    # Best-effort persistence; don't fail the caller if Supabase is slow.
+    if trace_rows and SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(
+                    f"{SUPABASE_URL}/rest/v1/agent_traces",
+                    json=trace_rows,
+                    headers={
+                        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+                        "Accept-Profile": "copilot",
+                        "Content-Profile": "copilot",
+                        "Content-Type": "application/json",
+                        "Prefer": "return=minimal",
+                    },
+                )
+        except Exception as exc:
+            print(f"[trace] persist failed: {type(exc).__name__}: {exc}", flush=True)
+
+    return session.id, "\n".join(final_text).strip()
+
+
 # Pre-seeded demo events the "Trigger demo" button replays. Keys are the
 # 3 event types the orchestrator routes; values are the payload the button
 # fires internally so judges don't have to copy curl commands.
@@ -445,16 +567,15 @@ async def dashboard_demo(request: Request) -> "Response":  # noqa: F821
             "A new salon event has arrived. Route it appropriately.\n\n"
             f"Event payload (JSON):\n{json.dumps(event, ensure_ascii=False, indent=2)}"
         )
-        session = await _runner.session_service.create_session(
-            app_name=_runner.app_name, user_id=user_id, session_id=session_id,
+        # Capture + persist the reasoning trace, same as /event, so the
+        # dashboard's "Recent reasoning traces" panel actually shows the
+        # sessions this button produced (it reads back copilot.agent_traces).
+        await _run_agent_capturing_trace(
+            session_id=session_id,
+            user_id=user_id,
+            business_id=user_id,
+            user_message=prompt,
         )
-        async for _ in _runner.run_async(
-            user_id=user_id, session_id=session.id,
-            new_message=genai_types.Content(
-                role="user", parts=[genai_types.Part.from_text(text=prompt)],
-            ),
-        ):
-            pass
 
     # Run all three concurrently. Individual failures are swallowed so a
     # rate-limit on one model call doesn't hide the other two.
@@ -1175,93 +1296,18 @@ async def handle_event(
     # event-emit time); Cloud Run service identity will replace this Day 2.
     user_id = str(business_id)
 
-    session = await _runner.session_service.create_session(
-        app_name=_runner.app_name,
-        user_id=user_id,
+    resolved_session_id, agent_response = await _run_agent_capturing_trace(
         session_id=session_id,
+        user_id=user_id,
+        business_id=str(business_id),
+        user_message=user_message,
     )
 
-    final_text: list[str] = []
-    trace_rows: list[dict[str, object]] = []
-    seq = 0
-
-    def _serialize_part(part: object) -> dict[str, object]:
-        out: dict[str, object] = {}
-        if getattr(part, "text", None):
-            out["text"] = part.text
-        fc = getattr(part, "function_call", None)
-        if fc:
-            out["function_call"] = {
-                "name": getattr(fc, "name", None),
-                "args": dict(getattr(fc, "args", {}) or {}),
-            }
-        fr = getattr(part, "function_response", None)
-        if fr:
-            out["function_response"] = {
-                "name": getattr(fr, "name", None),
-                "response": getattr(fr, "response", None),
-            }
-        return out
-
-    async for event in _runner.run_async(
-        user_id=user_id,
-        session_id=session.id,
-        new_message=genai_types.Content(
-            role="user",
-            parts=[genai_types.Part.from_text(text=user_message)],
-        ),
-    ):
-        # Capture each event for the /dashboard/trace/{session_id} page.
-        try:
-            parts = []
-            if event.content and event.content.parts:
-                parts = [_serialize_part(p) for p in event.content.parts]
-            evt_type = "final" if event.is_final_response() else "step"
-            if parts and any("function_call" in p for p in parts):
-                evt_type = "tool_call"
-            elif parts and any("function_response" in p for p in parts):
-                evt_type = "tool_response"
-            trace_rows.append({
-                "session_id": session.id,
-                "business_id": str(business_id),
-                "event_type": evt_type,
-                "agent_name": getattr(event, "author", None),
-                "content": {"parts": parts, "role": getattr(event.content, "role", None) if event.content else None},
-                "seq": seq,
-            })
-            seq += 1
-        except Exception as exc:
-            print(f"[trace] capture failed: {type(exc).__name__}: {exc}", flush=True)
-
-        if event.is_final_response() and event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    final_text.append(part.text)
-
-    # Best-effort persistence; don't fail /event if Supabase is slow.
-    if trace_rows and SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                await client.post(
-                    f"{SUPABASE_URL}/rest/v1/agent_traces",
-                    json=trace_rows,
-                    headers={
-                        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-                        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-                        "Accept-Profile": "copilot",
-                        "Content-Profile": "copilot",
-                        "Content-Type": "application/json",
-                        "Prefer": "return=minimal",
-                    },
-                )
-        except Exception as exc:
-            print(f"[trace] persist failed: {type(exc).__name__}: {exc}", flush=True)
-
     return {
-        "session_id": session.id,
+        "session_id": resolved_session_id,
         "event_type": event_type,
-        "agent_response": "\n".join(final_text).strip(),
-        "trace_url": f"/dashboard/trace/{session.id}",
+        "agent_response": agent_response,
+        "trace_url": f"/dashboard/trace/{resolved_session_id}",
     }
 
 
