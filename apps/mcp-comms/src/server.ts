@@ -30,6 +30,11 @@ const ok = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
 });
 
+const err = (message: string) => ({
+  isError: true,
+  content: [{ type: "text" as const, text: `error: ${message}` }],
+});
+
 export function buildServer(): McpServer {
   const server = new McpServer({
     name: "glossgo-copilot-mcp-comms",
@@ -79,18 +84,26 @@ export function buildServer(): McpServer {
       };
       console.error("[mcp-comms] send_whatsapp", JSON.stringify(action));
       if (supabase) {
-        await supabase.from("agent_actions").insert({
+        const { error } = await supabase.from("agent_actions").insert({
           business_id,
           kind: "send_whatsapp",
           payload: action,
           shadow: SHADOW,
         });
+        if (error) return err(`failed to record agent action: ${error.message}`);
       }
-      return ok({
-        sent: !SHADOW,
-        shadow: SHADOW,
-        delivery_id: SHADOW ? null : `wa-${Date.now()}`,
-      });
+      if (SHADOW) {
+        // Shadow mode: the message is logged + recorded above, never sent.
+        return ok({ sent: false, shadow: true, delivery_id: null });
+      }
+      // Live mode: there is no WhatsApp BSP integration wired yet (the Day-3
+      // BSP send path never landed). Fail loudly instead of fabricating a
+      // delivery — returning sent:true with a fake id would make recovered-slot
+      // offers silently go nowhere while the agent reports success.
+      return err(
+        "send_whatsapp live mode is not implemented: no WhatsApp BSP send path is wired. " +
+          "Run with SHADOW_MODE=true, or wire a real BSP integration before disabling shadow mode.",
+      );
     },
   );
 
@@ -114,16 +127,21 @@ export function buildServer(): McpServer {
         status: "pending",
       };
       console.error("[mcp-comms] enqueue_owner_approval", JSON.stringify(row));
-      let id: string | null = null;
-      if (supabase) {
-        const { data, error } = await supabase
-          .from("owner_approval_queue")
-          .insert(row)
-          .select("id")
-          .single();
-        if (!error) id = data?.id ?? null;
+      if (!supabase) {
+        return err(
+          "owner approval queue is unavailable: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not configured",
+        );
       }
-      return ok({ queued: true, approval_id: id ?? `mock-${Date.now()}` });
+      const { data, error } = await supabase
+        .from("owner_approval_queue")
+        .insert(row)
+        .select("id")
+        .single();
+      if (error) return err(`failed to enqueue owner approval: ${error.message}`);
+      if (!data?.id) {
+        return err("failed to enqueue owner approval: insert returned no id");
+      }
+      return ok({ queued: true, approval_id: data.id });
     },
   );
 

@@ -53,23 +53,35 @@ export function buildServer(): McpServer {
         staff_id: uuid().optional(),
         starts_at: iso().describe("ISO timestamp"),
         ends_at: iso().describe("ISO timestamp"),
-        idempotency_key: z.string().min(8).max(64),
+        idempotency_key: z
+          .string()
+          .min(8)
+          .max(64)
+          .describe(
+            "A unique, single-use key for THIS booking attempt — generate a fresh UUID/random string per attempt, never reuse a generic label across runs or customers. The server namespaces it to the caller's tenant, but reusing a key within the same tenant will return the earlier booking instead of creating a new one.",
+          ),
         source: z.literal("agent").default("agent"),
       },
     },
     async (input) => {
       if (!supabase) return ok({ ...input, status: SHADOW ? "shadow" : "confirmed" });
-      const { data: existing } = await supabase
+      // Namespace the idempotency key to the caller's tenant so a key chosen by
+      // the LLM can never collide with (or resolve to) another tenant's booking.
+      const { idempotency_key, ...rest } = input;
+      const scopedKey = `${input.business_id}:${idempotency_key}`;
+      const { data: existing, error: lookupError } = await supabase
         .from("bookings")
         .select("id, status")
-        .eq("idempotency_key", input.idempotency_key)
+        .eq("business_id", input.business_id)
+        .eq("idempotency_key", scopedKey)
         .maybeSingle();
+      if (lookupError) return err(lookupError.message);
       if (existing) return ok({ id: existing.id, status: existing.status, deduped: true });
 
       const status = SHADOW ? "shadow" : "confirmed";
       const { data, error } = await supabase
         .from("bookings")
-        .insert({ ...input, status })
+        .insert({ ...rest, idempotency_key: scopedKey, status })
         .select("id, status")
         .single();
       if (error) return err(error.message);
@@ -93,7 +105,10 @@ export function buildServer(): McpServer {
     async (input) => {
       console.error("[mcp-calendar] block_slot", JSON.stringify(input));
       if (supabase) {
-        await supabase.from("staff_blocks").insert({ ...input, shadow: SHADOW });
+        const { error } = await supabase
+          .from("staff_blocks")
+          .insert({ ...input, shadow: SHADOW });
+        if (error) return err(error.message);
       }
       return ok({ blocked: true, shadow: SHADOW });
     },
